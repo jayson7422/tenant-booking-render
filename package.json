@@ -1,0 +1,8 @@
+{
+  "name": "bayan-workforce",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LAN attendance and Philippine payroll workspace",
+  "scripts": { "start": "node server.js", "dev": "node server.js", "start:booking": "node booking-server.js" },
+  "dependencies": { "nodemailer": "^10.0.3" }
+}
