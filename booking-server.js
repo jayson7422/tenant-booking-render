@@ -24,10 +24,10 @@ function proxy(req, res) {
 
 http.createServer((req, res) => {
   const pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
-  if (pathname.startsWith('/api/tenant/') || pathname === '/api/login' || pathname === '/api/booking-admin' || pathname === '/api/tenants' || pathname.startsWith('/api/tenants/') || pathname === '/api/rooms' || pathname.startsWith('/api/rooms/') || pathname.startsWith('/api/bookings/') || pathname.startsWith('/api/tenant-reports/')) return proxy(req, res);
+  if (pathname.startsWith('/api/tenant/') || pathname.startsWith('/api/google/') || pathname === '/api/login' || pathname === '/api/booking-admin' || pathname === '/api/tenants' || pathname.startsWith('/api/tenants/') || pathname === '/api/rooms' || pathname.startsWith('/api/rooms/') || pathname.startsWith('/api/bookings/') || pathname.startsWith('/api/tenant-reports/')) return proxy(req, res);
   if (pathname === '/' || pathname === '/booking') return serve(res, 'booking.html');
   if (pathname === '/admin') return serve(res, 'booking-admin.html');
-  if (req.method === 'GET' && ['booking.js', 'booking.css', 'booking-admin.js', 'booking-admin.css'].includes(pathname.slice(1))) return serve(res, pathname.slice(1));
+  if (req.method === 'GET' && ['booking.js', 'booking.css', 'booking-admin.js', 'booking-admin.css', 'google-oauth.js'].includes(pathname.slice(1))) return serve(res, pathname.slice(1));
   if (pathname === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, service: 'tenant-booking', corePort: CORE_PORT })); }
   res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Not found' }));
 }).listen(PORT, '0.0.0.0', () => console.log(`Tenant booking service is running on http://0.0.0.0:${PORT}`));

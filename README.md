@@ -2,6 +2,11 @@
 
 LAN attendance and payroll starter application for Philippine employers. It has admin, manager, and employee dashboards; editable employee records; a weekly employee schedule; attendance clock-in/out; and payroll calculation with statutory SSS, PhilHealth, Pag-IBIG and indicative withholding-tax deductions.
 
+Application records are stored in MariaDB/MySQL. Follow
+[`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md) before starting the services. The
+legacy `data.json` is retained only as a backup source and is not read or
+written by the running application.
+
 ## Weekly schedule
 
 The **Schedule** screen uses a people-by-week layout. Admins and managers can add, edit, delete, and copy shifts from the prior week; employees can view only their own published schedule. Each shift captures the date, start/end time, role, work site, status, and a visual card color.
@@ -29,15 +34,22 @@ The portal validates each room/date/time interval, shows remaining allotted hour
 
 ### Google Calendar setup
 
-The app works locally immediately. To check and create events in your company Google Calendar, create a Google Cloud service account with the Calendar API enabled, share the calendar with that service-account email, then start the server with these environment variables:
+The app works locally without Calendar credentials. Google Calendar supports
+OAuth as the preferred configuration; set the following server-side values,
+then use **Connect Google Calendar** in Booking administration:
 
 ```powershell
-$env:GOOGLE_SERVICE_ACCOUNT_FILE = 'C:\secure\company-calendar-service-account.json'
-$env:GOOGLE_CALENDAR_ID = 'your-company-calendar-id@group.calendar.google.com'
-npm start
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:6500/api/google/callback
+GOOGLE_TOKEN_ENCRYPTION_KEY=...
 ```
 
-You may enter a different Google Calendar ID on a room record to give that room its own calendar. When configured, the app checks Google Calendar availability before confirmation and creates/deletes the corresponding calendar event.
+The refresh token is encrypted before it is stored in MariaDB. A service
+account remains available as a fallback through `GOOGLE_SERVICE_ACCOUNT_FILE`.
+You may enter a different Calendar ID on a room record. When configured, the
+app checks availability before confirmation and creates/deletes the matching
+calendar event.
 
 ### Usage-report email setup
 
@@ -57,9 +69,10 @@ Use your mail provider’s approved SMTP port/security combination. The report i
 
 ## Render deployment
 
-`render.yaml` deploys the tenant booking application as a standalone Render web service. It uses `BOOKING_ONLY=true`, so the public service shows the tenant portal at `/` and booking administration at `/admin`—the attendance application is not exposed.
-
-The Blueprint attaches a 1 GB persistent disk at `/var/data`; this is required because Render's normal filesystem is ephemeral. During the Blueprint setup, provide secure values for `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `GOOGLE_CALENDAR_ID`, and `GOOGLE_SERVICE_ACCOUNT_JSON`. Add SMTP variables only if usage-report email is needed.
+Do not deploy the current `render.yaml` yet. It still describes the legacy JSON
+persistence arrangement. The managed production database and one-service versus
+two-service Render architecture will be selected in Checkpoint 6 before this
+manifest is replaced.
 
 ## Start on the server computer
 
@@ -69,7 +82,8 @@ npm start
 
 Open `http://localhost:5177` on the server. Other devices on the same LAN use `http://SERVER-IP:5177` (for example `http://192.168.1.20:5177`). Allow Node.js through Windows Firewall on Private networks if prompted.
 
-Seed accounts: `admin / admin123`, `manager / manager123`, `employee / employee123`. Change these before using real records.
+Accounts are loaded from the migrated database. No demo accounts or default
+passwords are created automatically when the database is empty.
 
 ## Payroll basis
 

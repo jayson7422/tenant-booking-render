@@ -1,0 +1,125 @@
+# Local MariaDB setup
+
+This project uses XAMPP MariaDB for local database development. XAMPP and its
+database are not used by Render and must never be exposed to the public
+internet.
+
+## Prerequisites
+
+- Node.js 20 or newer
+- XAMPP with MariaDB/MySQL running on `127.0.0.1:3306`
+- A local `.env` copied from `.env.example`
+
+## Database provisioning
+
+The approved local database is `bayan_spaces_dev`. The application connects as
+the restricted `bayan_spaces_app` account, not as MariaDB root.
+
+Keep XAMPP MariaDB local to this computer. In `C:\xampp\mysql\bin\my.ini`, the
+`[mysqld]` section must contain:
+
+```ini
+bind-address="127.0.0.1"
+```
+
+Restart MariaDB after changing this setting and confirm that port 3306 is not
+listening on `0.0.0.0` or a LAN/VPN address.
+
+First create the empty database and local-only account from an administrator
+PowerShell session. Replace the example password and use the same value in
+`.env`:
+
+```powershell
+& 'C:\xampp\mysql\bin\mysql.exe' --user=root --execute="CREATE DATABASE bayan_spaces_dev CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER 'bayan_spaces_app'@'localhost' IDENTIFIED BY 'REPLACE_WITH_LOCAL_PASSWORD';"
+```
+
+The schema is imported by an administrator:
+
+```powershell
+Get-Content -Raw .\database\schema.sql |
+  & 'C:\xampp\mysql\bin\mysql.exe' --user=root bayan_spaces_dev
+```
+
+Grant only data access after the tables exist. Schema changes continue to run
+through an administrator account; the application account receives no global,
+create, alter, or drop privileges:
+
+```powershell
+$mysql = 'C:\xampp\mysql\bin\mysql.exe'
+$tables = @(
+  'companies', 'employees', 'users', 'attendance', 'payrolls', 'shifts',
+  'tenants', 'rooms', 'bookings', 'booking_settings',
+  'google_oauth_credentials'
+)
+$grants = ($tables | ForEach-Object {
+  "GRANT SELECT, INSERT, UPDATE, DELETE ON bayan_spaces_dev.$_ TO 'bayan_spaces_app'@'localhost'"
+}) -join '; '
+$grants += "; GRANT SELECT ON bayan_spaces_dev.schema_migrations TO 'bayan_spaces_app'@'localhost'"
+$grants += "; GRANT SELECT, INSERT, UPDATE ON bayan_spaces_dev.migration_runs TO 'bayan_spaces_app'@'localhost'"
+& $mysql --user=root --execute=$grants
+```
+
+Test the restricted application connection:
+
+```powershell
+npm.cmd run db:test
+```
+
+Apply any schema upgrades after pulling application changes. This command uses
+the separate local administrator credentials and never runs during normal app
+startup:
+
+```powershell
+npm.cmd run db:migrate
+```
+
+## JSON migration safety
+
+Validation is read-only and requires an explicit source and environment:
+
+```powershell
+npm.cmd run migrate -- --source="backups\server-data-before-mysql-YYYYMMDD-HHMMSS.json" --environment=server
+```
+
+The script prints the SHA-256 to confirm. Applying a migration additionally
+requires both `--apply` and that exact hash:
+
+```powershell
+npm.cmd run migrate -- --source="backups\server-data-before-mysql-YYYYMMDD-HHMMSS.json" --environment=server --confirm-sha256="EXACT_HASH" --apply
+```
+
+Do not run the apply command until the migration checkpoint is approved. The
+script refuses a non-empty target database, uses a transaction, preserves the
+original JSON, and records successful source hashes to prevent repeat imports.
+
+After the import, compare every migrated field and relationship to the same
+approved source and hash:
+
+```powershell
+npm.cmd run verify:migration -- --source="backups\server-data-before-mysql-YYYYMMDD-HHMMSS.json" --confirm-sha256="EXACT_HASH"
+```
+
+This verification is read-only. It checks IDs, record contents, password and
+access-code hashes, foreign-key relationships, booking durations, Calendar
+references, the encrypted OAuth credential, and the completed migration audit
+without printing credential values.
+
+## Running the existing application
+
+The application now requires MariaDB. It does not read, seed, or write
+`data.json` during startup or API requests. Keep the verified JSON backups for
+rollback and audit purposes.
+
+```powershell
+npm.cmd start
+```
+
+In a second terminal, for the LAN booking-only proxy:
+
+```powershell
+npm.cmd run start:booking
+```
+
+The core service checks the database before it starts. If MariaDB is stopped,
+the schema is missing, or `.env` is incorrect, startup fails without falling
+back to JSON.
