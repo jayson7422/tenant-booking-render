@@ -20,8 +20,32 @@ function positiveInteger(name, fallback) {
   return value;
 }
 
+function validateProductionDatabaseHost(host) {
+  if (process.env.NODE_ENV !== 'production') {
+    return;
+  }
+
+  const normalizedHost = String(host).trim().toLowerCase();
+
+  const localHosts = new Set([
+    'localhost',
+    '127.0.0.1',
+    '::1'
+  ]);
+
+  if (localHosts.has(normalizedHost)) {
+    throw new Error(
+      'Production cannot use a localhost database. Configure DB_HOST with the production MariaDB/MySQL host.'
+    );
+  }
+}
+
+const dbHost = required('DB_HOST');
+
+validateProductionDatabaseHost(dbHost);
+
 const config = {
-  host: required('DB_HOST'),
+  host: dbHost,
   port: positiveInteger('DB_PORT', 3306),
   database: required('DB_NAME'),
   user: required('DB_USER'),
