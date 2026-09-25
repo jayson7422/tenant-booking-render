@@ -9,8 +9,12 @@ const { testConnection, closePool } = require('./src/config/database');
 const PORT = Number(process.env.PORT || 5177);
 const PUBLIC = path.join(__dirname, 'public');
 
-const sessions = new Map();
-const tenantSessions = new Map();
+function sessionTokenHash(token) {
+  return crypto
+    .createHash('sha256')
+    .update(String(token || ''))
+    .digest('hex');
+}
 const tokenCache = { value: null, expiresAt: 0 };
 const googleOAuthStates = new Map();
 
@@ -105,17 +109,24 @@ function send(res, status, value) {
   );
 }
 
-function userFrom(req, data) {
-  const token = (
-    req.headers.authorization || ''
-  ).replace('Bearer ', '');
+async function userFrom(req, data) {
+  const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
 
-  const session = sessions.get(token);
+  if (!token) {
+    return null;
+  }
 
-  return session &&
-    data.users.find(
-      user => user.id === session.userId
-    );
+  const session = await repository.sessions.findUserSession(
+    sessionTokenHash(token)
+  );
+
+  if (!session) {
+    return null;
+  }
+
+  return data.users.find(
+    user => user.id === session.userId
+  ) || null;
 }
 
 function allow(user, roles) {
@@ -377,23 +388,18 @@ function calculatePayroll(
   };
 }
 
-function tenantFrom(
-  req,
-  data
-) {
-  const token = (
-    req.headers['x-tenant-token'] ||
-    ''
-  ).trim();
+async function tenantFrom(req, data) {
+  const token = String(req.headers['x-tenant-token'] || '').trim();
 
-  const session =
-    tenantSessions.get(token);
+  if (!token) {
+    return null;
+  }
 
-  if (
-    !session ||
-    session.expiresAt <
-    Date.now()
-  ) {
+  const session = await repository.sessions.findTenantSession(
+    sessionTokenHash(token)
+  );
+
+  if (!session) {
     return null;
   }
 
@@ -401,7 +407,7 @@ function tenantFrom(
     tenant =>
       tenant.id === session.tenantId &&
       tenant.status === 'Active'
-  );
+  ) || null;
 }
 
 function cleanTenant(tenant) {
@@ -1913,30 +1919,26 @@ const server =
             );
           }
 
-          const token =
-            crypto.randomUUID();
+        const token = crypto.randomUUID();
 
-          sessions.set(
+        const expiresAt = new Date(
+          Date.now() + 8 * 60 * 60 * 1000
+        );
+
+        await repository.sessions.createUserSession(
+          sessionTokenHash(token),
+          user.id,
+          expiresAt.toISOString()
+        );
+
+        return send(
+          res,
+          200,
+          {
             token,
-            {
-              userId:
-                user.id
-            }
-          );
-
-          return send(
-            res,
-            200,
-            {
-              token,
-
-              user:
-                publicUser(
-                  user,
-                  data
-                )
-            }
-          );
+            user: publicUser(user, data)
+          }
+        );
         }
 
         if (
@@ -1984,22 +1986,16 @@ const server =
             );
           }
 
-          const token =
-            crypto.randomUUID();
+          const token = crypto.randomUUID();
 
-          tenantSessions.set(
-            token,
-            {
-              tenantId:
-                tenant.id,
+          const expiresAt = new Date(
+            Date.now() + 8 * 60 * 60 * 1000
+          );
 
-              expiresAt:
-                Date.now() +
-                8 *
-                60 *
-                60 *
-                1000
-            }
+          await repository.sessions.createTenantSession(
+            sessionTokenHash(token),
+            tenant.id,
+            expiresAt.toISOString()
           );
 
           return send(
@@ -2029,12 +2025,10 @@ const server =
               '/api/tenant/'
             )
         ) {
-          const tenant =
-            tenantFrom(
-              req,
-              data
-            );
-
+          const tenant = await tenantFrom(
+            req,
+            data
+          );
           if (!tenant) {
             return send(
               res,
@@ -2605,11 +2599,10 @@ const server =
           url.pathname
             .startsWith('/api/')
         ) {
-          const user =
-            userFrom(
-              req,
-              data
-            );
+        const user = await userFrom(
+          req,
+          data
+        );
 
           if (!user) {
             return send(

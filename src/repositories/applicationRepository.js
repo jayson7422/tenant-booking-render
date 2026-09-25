@@ -344,6 +344,94 @@ const integrations = {
   }
 };
 
+const sessions = {
+  async createUserSession(tokenHash, userId, expiresAt) {
+    await pool.execute(
+      `INSERT INTO user_sessions
+        (token_hash, user_id, expires_at)
+       VALUES (?, ?, ?)`,
+      [
+        tokenHash,
+        userId,
+        sqlDateTime(expiresAt)
+      ]
+    );
+  },
+
+  async findUserSession(tokenHash) {
+    const [rows] = await pool.execute(
+      `SELECT
+        user_id AS userId,
+        expires_at AS expiresAt
+      FROM user_sessions
+      WHERE token_hash = ?
+        AND expires_at > UTC_TIMESTAMP(3)
+      LIMIT 1`,
+      [tokenHash]
+    );
+
+    return rows[0] || null;
+  },
+
+  async removeUserSession(tokenHash) {
+    await pool.execute(
+      `DELETE FROM user_sessions
+       WHERE token_hash = ?`,
+      [tokenHash]
+    );
+  },
+
+  async createTenantSession(tokenHash, tenantId, expiresAt) {
+    await pool.execute(
+      `INSERT INTO tenant_sessions
+        (token_hash, tenant_id, expires_at)
+       VALUES (?, ?, ?)`,
+      [
+        tokenHash,
+        tenantId,
+        sqlDateTime(expiresAt)
+      ]
+    );
+  },
+
+  async findTenantSession(tokenHash) {
+    const [rows] = await pool.execute(
+      `SELECT
+        tenant_id AS tenantId,
+        expires_at AS expiresAt
+      FROM tenant_sessions
+      WHERE token_hash = ?
+        AND expires_at > UTC_TIMESTAMP(3)
+      LIMIT 1`,
+      [tokenHash]
+    );
+
+    return rows[0] || null;
+  },
+
+  async removeTenantSession(tokenHash) {
+    await pool.execute(
+      `DELETE FROM tenant_sessions
+       WHERE token_hash = ?`,
+      [tokenHash]
+    );
+  },
+
+  async purgeExpired() {
+    await Promise.all([
+      pool.execute(
+        `DELETE FROM user_sessions
+        WHERE expires_at <= UTC_TIMESTAMP(3)`
+      ),
+
+      pool.execute(
+        `DELETE FROM tenant_sessions
+        WHERE expires_at <= UTC_TIMESTAMP(3)`
+      )
+    ]);
+  }
+};
+
 module.exports = {
   getSnapshot,
   tenants,
@@ -353,5 +441,6 @@ module.exports = {
   employees,
   attendance,
   payrolls,
+  sessions,
   integrations
 };
