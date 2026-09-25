@@ -1,37 +1,38 @@
 services:
   - type: web
-    name: bayan-spaces-booking
+    name: bayan-spaces
     runtime: node
-    plan: 0.5c-512mb
+    region: singapore
+
+    # Keep deployment manual while the production database
+    # and migration are being prepared and verified.
+    autoDeployTrigger: off
+
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /health
-    disk:
-      name: booking-data
-      mountPath: /var/data
-      sizeGB: 1
+
     envVars:
-      - key: BOOKING_ONLY
-        value: "true"
-      - key: DATA_FILE
-        value: /var/data/data.json
-      - key: ADMIN_USERNAME
+      # Production runtime
+      - key: NODE_ENV
+        value: production
+
+      # Production MySQL/MariaDB application connection.
+      # Real values are entered securely in Render.
+      - key: DB_HOST
         sync: false
-      - key: ADMIN_PASSWORD
+
+      - key: DB_PORT
+        value: "3306"
+
+      - key: DB_NAME
         sync: false
-      - key: GOOGLE_CALENDAR_ID
+
+      - key: DB_USER
         sync: false
-      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+
+      - key: DB_PASSWORD
         sync: false
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        sync: false
-      - key: SMTP_SECURE
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      - key: SMTP_FROM
-        sync: false
+
+      - key: DB_CONNECTION_LIMIT
+        value: "10"
