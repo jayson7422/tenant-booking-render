@@ -7,6 +7,8 @@
     "start": "node server.js",
     "dev": "node server.js",
     "start:booking": "node booking-server.js",
+    "start:gateway": "node onprem-gateway.js",
+    "start:render": "node render-proxy.js",
     "db:test": "node scripts/test-database.js",
     "db:migrate": "node scripts/apply-database-migrations.js",
     "migrate": "node scripts/migrate-json-to-mysql.js",
