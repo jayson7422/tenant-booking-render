@@ -3,36 +3,24 @@ services:
     name: bayan-spaces
     runtime: node
     region: singapore
+    plan: free
+    branch: render-onprem-database
 
-    # Keep deployment manual while the production database
-    # and migration are being prepared and verified.
+    # Keep deployments manual while the hybrid setup is being tested.
     autoDeployTrigger: off
 
     buildCommand: npm ci
-    startCommand: npm start
+    startCommand: npm run start:render
     healthCheckPath: /health
 
     envVars:
-      # Production runtime
       - key: NODE_ENV
         value: production
 
-      # Production MySQL/MariaDB application connection.
-      # Real values are entered securely in Render.
-      - key: DB_HOST
+      # Public HTTPS Tailscale Funnel URL for the company server.
+      - key: ONPREM_BASE_URL
         sync: false
 
-      - key: DB_PORT
-        value: "3306"
-
-      - key: DB_NAME
+      # Must exactly match RENDER_PROXY_SECRET on the on-prem server.
+      - key: RENDER_PROXY_SECRET
         sync: false
-
-      - key: DB_USER
-        sync: false
-
-      - key: DB_PASSWORD
-        sync: false
-
-      - key: DB_CONNECTION_LIMIT
-        value: "10"
