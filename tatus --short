@@ -1,0 +1,73 @@
+[1mdiff --git a/render.yaml b/render.yaml[m
+[1mindex 64a848b..6846fac 100644[m
+[1m--- a/render.yaml[m
+[1m+++ b/render.yaml[m
+[36m@@ -1,37 +1,37 @@[m
+ services:[m
+   - type: web[m
+[31m-    name: bayan-spaces-booking[m
+[32m+[m[32m    name: bayan-spaces[m
+     runtime: node[m
+[31m-    plan: 0.5c-512mb[m
+[32m+[m
+[32m+[m[32m    # Keep deployment manual while the production database[m
+[32m+[m[32m    # and migration are being prepared and verified.[m
+[32m+[m[32m    autoDeployTrigger: off[m
+[32m+[m
+     buildCommand: npm ci[m
+     startCommand: npm start[m
+     healthCheckPath: /health[m
+[31m-    disk:[m
+[31m-      name: booking-data[m
+[31m-      mountPath: /var/data[m
+[31m-      sizeGB: 1[m
+[32m+[m
+     envVars:[m
+[31m-      - key: BOOKING_ONLY[m
+[31m-        value: "true"[m
+[31m-      - key: DATA_FILE[m
+[31m-        value: /var/data/data.json[m
+[31m-      - key: ADMIN_USERNAME[m
+[31m-        sync: false[m
+[31m-      - key: ADMIN_PASSWORD[m
+[31m-        sync: false[m
+[31m-      - key: GOOGLE_CALENDAR_ID[m
+[31m-        sync: false[m
+[31m-      - key: GOOGLE_SERVICE_ACCOUNT_JSON[m
+[31m-        sync: false[m
+[31m-      - key: SMTP_HOST[m
+[31m-        sync: false[m
+[31m-      - key: SMTP_PORT[m
+[31m-        sync: false[m
+[31m-      - key: SMTP_SECURE[m
+[31m-        sync: false[m
+[31m-      - key: SMTP_USER[m
+[31m-        sync: false[m
+[31m-      - key: SMTP_PASS[m
+[31m-        sync: false[m
+[31m-      - key: SMTP_FROM[m
+[31m-        sync: false[m
+[32m+[m[32m      # Production runtime[m
+[32m+[m[32m      - key: NODE_ENV[m
+[32m+[m[32m        value: production[m
+[32m+[m
+[32m+[m[32m      # Production MySQL/MariaDB application connection.[m
+[32m+[m[32m      # Real values are entered securely in Render.[m
+[32m+[m[32m      - key: DB_HOST[m
+[32m+[m[32m        sync: false[m
+[32m+[m
+[32m+[m[32m      - key: DB_PORT[m
+[32m+[m[32m        value: "3306"[m
+[32m+[m
+[32m+[m[32m      - key: DB_NAME[m
+[32m+[m[32m        sync: false[m
+[32m+[m
+[32m+[m[32m      - key: DB_USER[m
+[32m+[m[32m        sync: false[m
+[32m+[m
+[32m+[m[32m      - key: DB_PASSWORD[m
+[32m+[m[32m        sync: false[m
+[32m+[m
+[32m+[m[32m      - key: DB_CONNECTION_LIMIT[m
+[32m+[m[32m        value: "10"[m
+\ No newline at end of file[m

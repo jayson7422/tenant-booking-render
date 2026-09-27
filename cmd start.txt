@@ -1,0 +1,7 @@
+npm.cmd start
+
+npm.cmd run start:gateway
+
+tailscale funnel commands:
+tailscale funnel --bg 6510
+tailscale funnel status

@@ -1,0 +1,106 @@
+warning: in the working copy of '.env.example', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/.env.example b/.env.example[m
+[1mindex a19c22f..5128f8d 100644[m
+[1m--- a/.env.example[m
+[1m+++ b/.env.example[m
+[36m@@ -1,30 +1,90 @@[m
+[31m-# Local MariaDB/MySQL connection. Copy this file to .env and replace secrets.[m
+[32m+[m[32m# ============================================================[m
+[32m+[m[32m# BayanSpaces / BayanWorkforce environment configuration[m
+[32m+[m[32m# Copy this file to .env for LOCAL DEVELOPMENT ONLY.[m
+[32m+[m[32m# Never commit the real .env file or real secrets.[m
+[32m+[m[32m# ============================================================[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m[32m# APPLICATION[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m# Local Node.js port.[m
+[32m+[m[32m# Render provides PORT automatically in production.[m
+[32m+[m[32mPORT=5177[m
+[32m+[m
+[32m+[m[32mNODE_ENV=development[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m[32m# DATABASE - APPLICATION CONNECTION[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m# Local XAMPP / MariaDB configuration.[m
+[32m+[m[32m# Replace these values with the production database credentials[m
+[32m+[m[32m# when configuring the Render environment.[m
+[32m+[m
+ DB_HOST=127.0.0.1[m
+ DB_PORT=3306[m
+ DB_NAME=bayan_spaces_dev[m
+ DB_USER=bayan_spaces_app[m
+ DB_PASSWORD=replace_with_a_unique_local_password[m
+[32m+[m
+[32m+[m[32m# mysql2 connection-pool size.[m
+ DB_CONNECTION_LIMIT=10[m
+ [m
+[31m-# Used only by the explicit `npm run db:migrate` administration command.[m
+[32m+[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m[32m# DATABASE - MIGRATION ADMIN[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m# Used only by:[m
+[32m+[m[32m# npm run db:migrate[m
+[32m+[m[32m#[m
+[32m+[m[32m# These credentials are NOT used by the normal application.[m
+[32m+[m[32m# For local XAMPP, root commonly has no password unless changed.[m
+[32m+[m
+ DB_ADMIN_USER=root[m
+ DB_ADMIN_PASSWORD=[m
+ [m
+[31m-# Existing application configuration remains server-side only.[m
+[31m-PORT=5177[m
+[31m-BOOKING_PORT=6500[m
+[31m-CORE_PORT=5177[m
+ [m
+[31m-# Optional integrations. Never commit real values.[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m[32m# GOOGLE CALENDAR / OAUTH[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m# Optional. Leave blank until Google Calendar integration[m
+[32m+[m[32m# is configured.[m
+[32m+[m
+ GOOGLE_CALENDAR_ID=[m
+[32m+[m
+ GOOGLE_OAUTH_CLIENT_ID=[m
+ GOOGLE_OAUTH_CLIENT_SECRET=[m
+[31m-GOOGLE_OAUTH_REDIRECT_URI=http://localhost:6500/api/google/callback[m
+[32m+[m
+[32m+[m[32m# LOCAL callback:[m
+[32m+[m[32mGOOGLE_OAUTH_REDIRECT_URI=http://localhost:5177/api/google/callback[m
+[32m+[m
+[32m+[m[32m# Secret used to encrypt/decrypt stored OAuth refresh tokens.[m
+[32m+[m[32m# Production must use a strong secret and must retain the same[m
+[32m+[m[32m# value while existing encrypted tokens are being used.[m
+ GOOGLE_TOKEN_ENCRYPTION_KEY=[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# Optional alternative to OAuth.[m
+[32m+[m[32m# Normally leave these blank when using Google OAuth.[m
+[32m+[m
+[32m+[m[32mGOOGLE_SERVICE_ACCOUNT_JSON=[m
+ GOOGLE_SERVICE_ACCOUNT_FILE=[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m[32m# EMAIL / SMTP[m
+[32m+[m[32m# ------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m# Optional. Required only for sending tenant usage reports.[m
+[32m+[m
+ SMTP_HOST=[m
+ SMTP_PORT=465[m
+ SMTP_SECURE=true[m
+ SMTP_USER=[m
+ SMTP_PASS=[m
+[31m-SMTP_FROM=[m
+[32m+[m[32mSMTP_FROM=[m
+\ No newline at end of file[m
