@@ -49,6 +49,50 @@ button{cursor:pointer;border:0}
 .room-form .wide{grid-column:1/-1}
 .form-actions{display:flex;gap:9px;align-items:center;margin-top:17px;flex-wrap:wrap}
 
+/* ── Interactive date and time pickers ── */
+.picker-wrap{position:relative}
+.picker-trigger{width:100%;min-height:62px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 13px;border:1px solid #d5e4dc;border-radius:10px;background:#fff;color:var(--ink);text-align:left;transition:border-color .15s,box-shadow .15s,background .15s}
+.picker-trigger:hover,.picker-trigger:focus-visible{border-color:var(--green);box-shadow:0 0 0 3px #087b5a16;outline:0;background:#fbfffd}
+.picker-trigger-copy{display:grid;gap:3px}
+.picker-trigger-copy small{color:var(--muted);font-size:11px;font-weight:600}
+.picker-trigger-copy strong{font-size:15px;font-weight:700}
+.picker-icon{display:grid;place-items:center;width:29px;height:29px;border-radius:8px;background:var(--light);color:var(--green);font-size:21px;line-height:1}
+.picker-popover{position:fixed;inset:0;z-index:100;width:100%;height:100%;display:grid;place-items:center;padding:24px;border:0;border-radius:0;background:#102d264d;box-shadow:none;animation:picker-in .16s ease-out}
+.picker-popover[hidden]{display:none}
+body.picker-open{overflow:hidden}
+@keyframes picker-in{from{opacity:0}to{opacity:1}}
+.picker-dialog-card{width:min(380px,100%);max-height:min(680px,calc(100vh - 48px));overflow:auto;padding:20px;border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:0 24px 70px #102d2640;animation:dialog-in .16s ease-out}
+@keyframes dialog-in{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+.dialog-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:18px}
+.dialog-kicker{display:block;color:var(--green);font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.dialog-title{display:block;margin-top:4px;font:800 20px Manrope;letter-spacing:-.4px}
+.dialog-close{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:#f1f8f4;color:var(--green);font-size:24px;line-height:1}
+.dialog-close:hover{background:var(--light)}
+.calendar-head,.time-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.calendar-head strong{font-size:14px}
+.calendar-nav{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:#f1f8f4;color:var(--green);font-size:22px;line-height:1}
+.calendar-nav:hover{background:var(--light)}
+.calendar-weekdays,.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:12px}
+.calendar-weekdays span{text-align:center;color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}
+.calendar-day{height:32px;border-radius:8px;background:transparent;color:var(--ink);font-size:12px}
+.calendar-day:hover:not(:disabled){background:var(--light);color:var(--green);font-weight:700}
+.calendar-day.is-outside{color:#b7c5c0}
+.calendar-day.is-today{box-shadow:inset 0 0 0 1px #8bcdb1;color:var(--green);font-weight:700}
+.calendar-day.is-selected{background:var(--green);color:#fff;font-weight:700;box-shadow:none}
+.calendar-day:disabled{color:#cbd5d0;cursor:not-allowed}
+.calendar-footer{display:flex;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.calendar-link{padding:4px 6px;background:transparent;color:var(--green);font-size:12px;font-weight:700}
+.calendar-link:hover{text-decoration:underline}
+.time-head{align-items:flex-start;margin-bottom:10px}
+.time-head small{display:block;color:var(--muted);font-size:12px}
+.time-options{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;max-height:310px;overflow:auto;padding:2px 2px 2px 0}
+.time-option{padding:9px 5px;border:1px solid #e1ebe6;border-radius:8px;background:#fbfdfc;color:var(--ink);font-size:12px;font-weight:600}
+.time-option:hover{border-color:#8bcdb1;background:var(--light);color:var(--green)}
+.time-option.is-selected{border-color:var(--green);background:var(--green);color:#fff}
+.suggestion-heading{display:block;margin-top:8px}
+.suggestion-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
+.suggestion-button{font-size:12px;padding:8px 10px}
+
 /* ── Status ── */
 .status{margin-top:16px;padding:11px 12px;border-radius:9px;line-height:1.45}
 .status.info{background:#edf5f1;color:#41635a}
@@ -98,4 +142,10 @@ button{cursor:pointer;border:0}
   .remaining strong{font-size:24px}
   .form-actions{flex-direction:column}
   .form-actions .outline,.form-actions .primary{width:100%}
+}
+
+@media(max-width:500px){
+  .picker-popover{place-items:end center;padding:0}
+  .picker-dialog-card{width:100%;max-height:82vh;border-radius:22px 22px 0 0;padding:18px 16px 22px}
+  .time-options{max-height:48vh}
 }

@@ -47,7 +47,7 @@ create, alter, or drop privileges:
 ```powershell
 $mysql = 'C:\xampp\mysql\bin\mysql.exe'
 $tables = @(
-  'companies', 'employees', 'users', 'attendance', 'payrolls', 'shifts',
+  'companies', 'employees', 'users',
   'tenants', 'rooms', 'bookings', 'booking_settings',
   'google_oauth_credentials'
 )
@@ -72,37 +72,6 @@ startup:
 ```powershell
 npm.cmd run db:migrate
 ```
-
-## JSON migration safety
-
-Validation is read-only and requires an explicit source and environment:
-
-```powershell
-npm.cmd run migrate -- --source="backups\server-data-before-mysql-YYYYMMDD-HHMMSS.json" --environment=server
-```
-
-The script prints the SHA-256 to confirm. Applying a migration additionally
-requires both `--apply` and that exact hash:
-
-```powershell
-npm.cmd run migrate -- --source="backups\server-data-before-mysql-YYYYMMDD-HHMMSS.json" --environment=server --confirm-sha256="EXACT_HASH" --apply
-```
-
-Do not run the apply command until the migration checkpoint is approved. The
-script refuses a non-empty target database, uses a transaction, preserves the
-original JSON, and records successful source hashes to prevent repeat imports.
-
-After the import, compare every migrated field and relationship to the same
-approved source and hash:
-
-```powershell
-npm.cmd run verify:migration -- --source="backups\server-data-before-mysql-YYYYMMDD-HHMMSS.json" --confirm-sha256="EXACT_HASH"
-```
-
-This verification is read-only. It checks IDs, record contents, password and
-access-code hashes, foreign-key relationships, booking durations, Calendar
-references, the encrypted OAuth credential, and the completed migration audit
-without printing credential values.
 
 ## Running the existing application
 

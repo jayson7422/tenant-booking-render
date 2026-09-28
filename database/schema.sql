@@ -1,4 +1,4 @@
--- BayanSpaces / BayanWorkforce relational schema
+-- Launchpad Tenant relational schema
 -- Baseline: 001
 -- Compatible with current MariaDB and MySQL versions using InnoDB.
 --
@@ -67,75 +67,6 @@ CREATE TABLE IF NOT EXISTS users (
     UNIQUE KEY uq_users_employee (employee_id),
     CONSTRAINT fk_users_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON UPDATE RESTRICT ON DELETE CASCADE,
     CONSTRAINT chk_users_role CHECK (role IN ('admin', 'manager', 'employee'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS attendance (
-    id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    employee_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    attendance_date DATE NOT NULL,
-    time_in TIME NULL,
-    time_out TIME NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'Present',
-    overtime_hours DECIMAL(7,2) NOT NULL DEFAULT 0.00,
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_attendance_employee_date (employee_id, attendance_date),
-    KEY idx_attendance_date_status (attendance_date, status),
-    CONSTRAINT fk_attendance_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-    CONSTRAINT chk_attendance_status CHECK (status IN ('Present', 'Absent', 'Leave', 'Holiday')),
-    CONSTRAINT chk_attendance_overtime CHECK (overtime_hours >= 0),
-    CONSTRAINT chk_attendance_times CHECK (time_out IS NULL OR time_in IS NULL OR time_out >= time_in)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS payrolls (
-    id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    employee_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    period VARCHAR(20) NOT NULL,
-    overtime_hours DECIMAL(7,2) NOT NULL DEFAULT 0.00,
-    base_pay DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    overtime_pay DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    allowances DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    absence_deduction DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    other_deductions DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    gross_pay DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    sss_employee DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    sss_employer DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    philhealth_employee DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    philhealth_employer DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    pagibig_employee DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    pagibig_employer DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    withholding_tax DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    total_deduction DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    net_pay DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    employer_cost DECIMAL(14,2) NOT NULL DEFAULT 0.00,
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (id),
-    KEY idx_payrolls_employee_period (employee_id, period),
-    KEY idx_payrolls_period (period),
-    CONSTRAINT fk_payrolls_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-    CONSTRAINT chk_payrolls_overtime CHECK (overtime_hours >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS shifts (
-    id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    employee_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    shift_date DATE NOT NULL,
-    start_time TIME NOT NULL,
-    end_time TIME NOT NULL,
-    job_site VARCHAR(160) NOT NULL,
-    role_label VARCHAR(160) NOT NULL,
-    color VARCHAR(32) NOT NULL DEFAULT 'teal',
-    status VARCHAR(32) NOT NULL DEFAULT 'Published',
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (id),
-    KEY idx_shifts_employee_date (employee_id, shift_date),
-    KEY idx_shifts_date_status (shift_date, status),
-    CONSTRAINT fk_shifts_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-    CONSTRAINT chk_shifts_times CHECK (end_time > start_time),
-    CONSTRAINT chk_shifts_status CHECK (status IN ('Published', 'Draft')),
-    CONSTRAINT chk_shifts_color CHECK (color IN ('teal', 'blue', 'purple', 'orange'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS tenants (
@@ -239,5 +170,5 @@ CREATE TABLE IF NOT EXISTS migration_runs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO schema_migrations (version, description)
-VALUES ('001', 'Initial BayanSpaces and BayanWorkforce relational schema')
+VALUES ('001', 'Initial Launchpad Tenant relational schema')
 ON DUPLICATE KEY UPDATE description = VALUES(description);

@@ -58,41 +58,10 @@ async function inTransaction(callback) {
 }
 
 async function getSnapshot() {
-  const [companies, employees, users, attendance, payrolls, shifts, tenants, rooms, bookings, settings, oauth] = await Promise.all([
-    pool.query(`SELECT id, name, pay_frequency AS payFrequency,
-      CAST(standard_hours AS DOUBLE) AS standardHours, payroll_rules_version AS payrollRulesVersion
-      FROM companies WHERE id=?`, [COMPANY_ID]),
-    pool.query(`SELECT id, code, first_name AS firstName, last_name AS lastName, department,
-      position, role, CAST(monthly_salary AS DOUBLE) AS monthlySalary, status,
-      start_date AS startDate, sss_number AS sss, philhealth_number AS philhealth,
-      pagibig_number AS pagibig FROM employees WHERE company_id=? ORDER BY created_at,id`, [COMPANY_ID]),
+  const [companies, users, tenants, rooms, bookings, settings, oauth] = await Promise.all([
+    pool.query(`SELECT id, name FROM companies WHERE id=?`, [COMPANY_ID]),
     pool.query(`SELECT u.id, u.username, u.password_hash AS passwordHash, u.employee_id AS employeeId,
       u.role FROM users u JOIN employees e ON e.id=u.employee_id WHERE e.company_id=? ORDER BY u.created_at,u.id`, [COMPANY_ID]),
-    pool.query(`SELECT a.id, a.employee_id AS employeeId, a.attendance_date AS date,
-      a.time_in AS timeIn, a.time_out AS timeOut, a.status,
-      CAST(a.overtime_hours AS DOUBLE) AS overtimeHours
-      FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=?
-      ORDER BY a.attendance_date,a.created_at,a.id`, [COMPANY_ID]),
-    pool.query(`SELECT p.id, p.employee_id AS employeeId, p.period,
-      CAST(p.overtime_hours AS DOUBLE) AS overtimeHours, CAST(p.base_pay AS DOUBLE) AS basePay,
-      CAST(p.overtime_pay AS DOUBLE) AS overtimePay, CAST(p.allowances AS DOUBLE) AS allowances,
-      CAST(p.absence_deduction AS DOUBLE) AS absenceDeduction,
-      CAST(p.other_deductions AS DOUBLE) AS otherDeductions, CAST(p.gross_pay AS DOUBLE) AS grossPay,
-      CAST(p.sss_employee AS DOUBLE) AS sssEmployee, CAST(p.sss_employer AS DOUBLE) AS sssEmployer,
-      CAST(p.philhealth_employee AS DOUBLE) AS philEmployee,
-      CAST(p.philhealth_employer AS DOUBLE) AS philEmployer,
-      CAST(p.pagibig_employee AS DOUBLE) AS pagibigEmployee,
-      CAST(p.pagibig_employer AS DOUBLE) AS pagibigEmployer,
-      CAST(p.withholding_tax AS DOUBLE) AS withholding,
-      CAST(p.total_deduction AS DOUBLE) AS totalDeduction, CAST(p.net_pay AS DOUBLE) AS netPay,
-      CAST(p.employer_cost AS DOUBLE) AS employerCost, p.created_at AS createdAt
-      FROM payrolls p JOIN employees e ON e.id=p.employee_id WHERE e.company_id=?
-      ORDER BY p.created_at,p.id`, [COMPANY_ID]),
-    pool.query(`SELECT s.id, s.employee_id AS employeeId, s.shift_date AS date,
-      s.start_time AS startTime, s.end_time AS endTime, s.job_site AS jobSite,
-      s.role_label AS roleLabel, s.color, s.status
-      FROM shifts s JOIN employees e ON e.id=s.employee_id WHERE e.company_id=?
-      ORDER BY s.shift_date,s.start_time,s.id`, [COMPANY_ID]),
     pool.query(`SELECT id, full_name AS fullName, tenant_company_name AS companyName,
       email, location, CAST(allotted_hours AS DOUBLE) AS allottedHours,
       access_code_hash AS accessCodeHash, status, created_at AS createdAt
@@ -117,11 +86,7 @@ async function getSnapshot() {
 
   return {
     company: companies[0][0],
-    employees: employees[0].map(item => ({ ...item, startDate: date(item.startDate) })),
     users: users[0],
-    attendance: attendance[0].map(item => ({ ...item, date: date(item.date), timeIn: time(item.timeIn), timeOut: time(item.timeOut) })),
-    payrolls: payrolls[0].map(item => ({ ...item, createdAt: dateTime(item.createdAt) })),
-    shifts: shifts[0].map(item => ({ ...item, date: date(item.date), startTime: time(item.startTime), endTime: time(item.endTime) })),
     tenants: tenants[0].map(item => ({ ...item, createdAt: dateTime(item.createdAt) })),
     rooms: rooms[0].map(item => ({ ...item, calendarId: item.calendarId || '' })),
     bookings: bookings[0].map(item => ({
@@ -241,100 +206,6 @@ const bookings = {
   }
 };
 
-const shifts = {
-  async create(shift, connection = pool) {
-    try {
-      await connection.execute(`INSERT INTO shifts
-        (id,employee_id,shift_date,start_time,end_time,job_site,role_label,color,status)
-        VALUES (?,?,?,?,?,?,?,?,?)`, [shift.id, shift.employeeId, shift.date, shift.startTime,
-        shift.endTime, shift.jobSite, shift.roleLabel, shift.color, shift.status]);
-    } catch (error) { throw translateDatabaseError(error); }
-  },
-  async createMany(items) {
-    return inTransaction(async connection => {
-      for (const item of items) await shifts.create(item, connection);
-    });
-  },
-  async update(shift) {
-    try {
-      await pool.execute(`UPDATE shifts SET employee_id=?,shift_date=?,start_time=?,end_time=?,
-        job_site=?,role_label=?,color=?,status=? WHERE id=?`, [shift.employeeId, shift.date,
-        shift.startTime, shift.endTime, shift.jobSite, shift.roleLabel, shift.color, shift.status, shift.id]);
-    } catch (error) { throw translateDatabaseError(error); }
-  },
-  async remove(id) { await pool.execute('DELETE FROM shifts WHERE id=?', [id]); }
-};
-
-const employees = {
-  async createWithUser(employee, user) {
-    return inTransaction(async connection => {
-      await connection.execute(`INSERT INTO employees
-        (id,company_id,code,first_name,last_name,department,position,role,monthly_salary,status,
-         start_date,sss_number,philhealth_number,pagibig_number)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [employee.id, COMPANY_ID, employee.code, employee.firstName,
-        employee.lastName, employee.department, employee.position, employee.role, numeric(employee.monthlySalary),
-        employee.status, employee.startDate || null, employee.sss || null, employee.philhealth || null, employee.pagibig || null]);
-      await connection.execute(`INSERT INTO users (id,employee_id,username,password_hash,role,is_active)
-        VALUES (?,?,?,?,?,?)`, [user.id, employee.id, user.username, user.passwordHash, user.role, employee.status === 'Active']);
-    });
-  },
-  async updateWithUser(employee, user) {
-    return inTransaction(async connection => {
-      await connection.execute(`UPDATE employees SET code=?,first_name=?,last_name=?,department=?,position=?,
-        role=?,monthly_salary=?,status=?,start_date=?,sss_number=?,philhealth_number=?,pagibig_number=?
-        WHERE id=? AND company_id=?`, [employee.code, employee.firstName, employee.lastName, employee.department,
-        employee.position, employee.role, numeric(employee.monthlySalary), employee.status, employee.startDate || null,
-        employee.sss || null, employee.philhealth || null, employee.pagibig || null, employee.id, COMPANY_ID]);
-      if (user) await connection.execute(`UPDATE users SET password_hash=?,role=?,is_active=? WHERE id=?`,
-        [user.passwordHash, user.role, employee.status === 'Active', user.id]);
-    });
-  },
-  async removeWithUser(id) {
-    return inTransaction(async connection => {
-      await connection.execute('DELETE FROM users WHERE employee_id=?', [id]);
-      await connection.execute('DELETE FROM employees WHERE id=? AND company_id=?', [id, COMPANY_ID]);
-    });
-  }
-};
-
-const attendance = {
-  async create(record) {
-    try {
-      await pool.execute(`INSERT INTO attendance
-        (id,employee_id,attendance_date,time_in,time_out,status,overtime_hours)
-        VALUES (?,?,?,?,?,?,?)`, [record.id, record.employeeId, record.date, record.timeIn || null,
-        record.timeOut || null, record.status, numeric(record.overtimeHours)]);
-    } catch (error) { throw translateDatabaseError(error); }
-  },
-  async update(record) {
-    try {
-      await pool.execute(`UPDATE attendance SET employee_id=?,attendance_date=?,time_in=?,time_out=?,
-        status=?,overtime_hours=? WHERE id=?`, [record.employeeId, record.date, record.timeIn || null,
-        record.timeOut || null, record.status, numeric(record.overtimeHours), record.id]);
-    } catch (error) { throw translateDatabaseError(error); }
-  },
-  async remove(id) { await pool.execute('DELETE FROM attendance WHERE id=?', [id]); }
-};
-
-const payrolls = {
-  async create(payroll) {
-    try {
-      await pool.execute(`INSERT INTO payrolls
-        (id,employee_id,period,overtime_hours,base_pay,overtime_pay,allowances,absence_deduction,
-         other_deductions,gross_pay,sss_employee,sss_employer,philhealth_employee,philhealth_employer,
-         pagibig_employee,pagibig_employer,withholding_tax,total_deduction,net_pay,employer_cost,created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [payroll.id, payroll.employeeId, payroll.period,
-        numeric(payroll.overtimeHours), numeric(payroll.basePay), numeric(payroll.overtimePay), numeric(payroll.allowances),
-        numeric(payroll.absenceDeduction), numeric(payroll.otherDeductions), numeric(payroll.grossPay),
-        numeric(payroll.sssEmployee), numeric(payroll.sssEmployer), numeric(payroll.philEmployee),
-        numeric(payroll.philEmployer), numeric(payroll.pagibigEmployee), numeric(payroll.pagibigEmployer),
-        numeric(payroll.withholding), numeric(payroll.totalDeduction), numeric(payroll.netPay),
-        numeric(payroll.employerCost), sqlDateTime(payroll.createdAt)]);
-    } catch (error) { throw translateDatabaseError(error); }
-  },
-  async remove(id) { await pool.execute('DELETE FROM payrolls WHERE id=?', [id]); }
-};
-
 const integrations = {
   async saveGoogleOAuth(refreshTokenEncrypted, connectedAt) {
     await pool.execute(`INSERT INTO google_oauth_credentials
@@ -437,10 +308,6 @@ module.exports = {
   tenants,
   rooms,
   bookings,
-  shifts,
-  employees,
-  attendance,
-  payrolls,
   sessions,
   integrations
 };

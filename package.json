@@ -1,8 +1,8 @@
 {
-  "name": "bayan-workforce",
+  "name": "launchpad-tenant",
   "version": "1.0.0",
   "private": true,
-  "description": "LAN attendance and Philippine payroll workspace",
+  "description": "Tenant room booking and booking administration workspace",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
@@ -10,10 +10,7 @@
     "start:gateway": "node onprem-gateway.js",
     "start:render": "node render-proxy.js",
     "db:test": "node scripts/test-database.js",
-    "db:migrate": "node scripts/apply-database-migrations.js",
-    "migrate": "node scripts/migrate-json-to-mysql.js",
-    "verify:migration": "node scripts/verify-json-migration.js",
-    "test:local": "node scripts/test-local-application.js"
+    "db:migrate": "node scripts/apply-database-migrations.js"
   },
   "dependencies": {
     "dotenv": "^18.0.1",

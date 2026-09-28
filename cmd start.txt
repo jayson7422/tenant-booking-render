@@ -5,3 +5,9 @@ npm.cmd run start:gateway
 tailscale funnel commands:
 tailscale funnel --bg 6510
 tailscale funnel status
+
+deploy changes in render:
+git push deployment render-onprem-database
+
+rather than:
+git push origin render-onprem-database
