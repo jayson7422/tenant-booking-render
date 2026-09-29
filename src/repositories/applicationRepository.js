@@ -160,6 +160,26 @@ function bookingValues(booking) {
 }
 
 const bookings = {
+  async findConflict(roomId, bookingDate, startTime, endTime, exceptId = null) {
+    const values = [roomId, bookingDate, endTime, startTime];
+    const exclusion = exceptId ? ' AND id<>?' : '';
+
+    if (exceptId) values.push(exceptId);
+
+    const [rows] = await pool.execute(
+      `SELECT id, tenant_id AS tenantId, booking_date AS date,
+        start_time AS startTime, end_time AS endTime
+       FROM bookings
+       WHERE room_id=? AND booking_date=? AND status='Confirmed'
+         AND start_time < ? AND end_time > ?${exclusion}
+       ORDER BY start_time
+       LIMIT 1`,
+      values
+    );
+
+    return rows[0] || null;
+  },
+
   async createConfirmed(booking) {
     return inTransaction(async connection => {
       const [tenantRows] = await connection.execute(

@@ -234,7 +234,7 @@ function tenantRemaining(
   );
 }
 
-function bookingConflict(
+async function bookingConflict(
   data,
   roomId,
   date,
@@ -242,22 +242,12 @@ function bookingConflict(
   endTime,
   exceptId
 ) {
-  const start =
-    `${date}T${startTime}`;
-
-  const end =
-    `${date}T${endTime}`;
-
-  return data.bookings.find(
-    booking =>
-      booking.id !== exceptId &&
-      booking.roomId === roomId &&
-      booking.date === date &&
-      booking.status === 'Confirmed' &&
-      `${booking.date}T${booking.startTime}` <
-        end &&
-      `${booking.date}T${booking.endTime}` >
-        start
+  return repository.bookings.findConflict(
+    roomId,
+    date,
+    startTime,
+    endTime,
+    exceptId
   );
 }
 
@@ -1097,7 +1087,7 @@ async function availabilitySuggestions(
         );
 
       if (
-        bookingConflict(
+        await bookingConflict(
           data,
           room.id,
           date,
@@ -1909,7 +1899,7 @@ const server =
             }
 
             const conflict =
-              bookingConflict(
+              await bookingConflict(
                 data,
                 room.id,
                 booking.date,
@@ -2183,7 +2173,7 @@ const server =
             }
 
             if (
-              bookingConflict(
+              await bookingConflict(
                 data,
                 room.id,
                 input.date,
