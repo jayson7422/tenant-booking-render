@@ -159,6 +159,23 @@ function bookingValues(booking) {
     booking.cancellationRemark || null, sqlDateTime(booking.cancelledAt), sqlDateTime(booking.createdAt)];
 }
 
+async function insertBookingAudit(connection, entry) {
+  await connection.execute(
+    `INSERT INTO booking_audit_log
+      (booking_id,admin_user_id,admin_username,action,reason,previous_values,new_values)
+      VALUES (?,?,?,?,?,?,?)`,
+    [
+      entry.bookingId,
+      entry.adminUserId,
+      entry.adminUsername,
+      entry.action,
+      entry.reason || null,
+      entry.previousValues ? JSON.stringify(entry.previousValues) : null,
+      entry.newValues ? JSON.stringify(entry.newValues) : null
+    ]
+  );
+}
+
 const bookings = {
   async findConflict(roomId, bookingDate, startTime, endTime, exceptId = null) {
     const values = [roomId, bookingDate, endTime, startTime];
@@ -212,6 +229,72 @@ const bookings = {
       return { remainingHours: Math.round(((remainingMinutes - durationMinutes) / 60) * 100) / 100 };
     });
   },
+  async updateConfirmedByAdmin(current, updated, audit) {
+    return inTransaction(async connection => {
+      const [bookingRows] = await connection.execute(
+        `SELECT id,tenant_id AS tenantId,status FROM bookings WHERE id=? FOR UPDATE`,
+        [current.id]
+      );
+      if (!bookingRows.length) throw appError('Booking not found.', 404);
+      if (bookingRows[0].status !== 'Confirmed') throw appError('Only confirmed bookings can be edited.', 409);
+
+      const [roomRows] = await connection.execute(
+        'SELECT id,name FROM rooms WHERE id=? AND company_id=? FOR UPDATE',
+        [updated.roomId, COMPANY_ID]
+      );
+      if (!roomRows.length) throw appError('Workspace no longer exists.', 409);
+
+      const [tenantRows] = await connection.execute(
+        `SELECT allotted_hours AS allottedHours FROM tenants
+         WHERE id=? AND company_id=? AND status='Active' FOR UPDATE`,
+        [current.tenantId, COMPANY_ID]
+      );
+      if (!tenantRows.length) throw appError('Tenant is no longer active.', 409);
+
+      const durationMinutes = Math.round(numeric(updated.hours) * 60);
+      const [usageRows] = await connection.execute(
+        `SELECT COALESCE(SUM(duration_minutes),0) AS usedMinutes FROM bookings
+         WHERE tenant_id=? AND status='Confirmed' AND id<>?`,
+        [current.tenantId, current.id]
+      );
+      const remainingMinutes = Math.round(numeric(tenantRows[0].allottedHours) * 60) - Number(usageRows[0].usedMinutes);
+      if (remainingMinutes < durationMinutes) {
+        throw appError(`Only ${Math.max(0, remainingMinutes / 60).toFixed(1)} allotted hours remain for this tenant.`, 409);
+      }
+
+      const [conflicts] = await connection.execute(
+        `SELECT id FROM bookings
+         WHERE room_id=? AND booking_date=? AND status='Confirmed' AND id<>?
+           AND start_time < ? AND end_time > ? LIMIT 1`,
+        [updated.roomId, updated.date, current.id, updated.endTime, updated.startTime]
+      );
+      if (conflicts.length) throw appError('This time conflicts with another booking for the selected workspace. Please choose another time.', 409);
+
+      await connection.execute(
+        `UPDATE bookings SET room_id=?,room_name_snapshot=?,booking_date=?,start_time=?,end_time=?
+         ,duration_minutes=?,calendar_event_id=? WHERE id=?`,
+        [updated.roomId, roomRows[0].name, updated.date, updated.startTime, updated.endTime,
+          durationMinutes, updated.calendarEventId || null, current.id]
+      );
+      await insertBookingAudit(connection, audit);
+      return { remainingHours: Math.round(((remainingMinutes - durationMinutes) / 60) * 100) / 100 };
+    });
+  },
+  async cancelByAdmin(id, remark, audit, cancelledAt) {
+    return inTransaction(async connection => {
+      const [rows] = await connection.execute(
+        `SELECT id,status FROM bookings WHERE id=? FOR UPDATE`,
+        [id]
+      );
+      if (!rows.length) throw appError('Booking not found.', 404);
+      if (rows[0].status !== 'Confirmed') throw appError('Only confirmed bookings can be cancelled.', 409);
+      await connection.execute(
+        `UPDATE bookings SET status='Cancelled',cancellation_remark=?,cancelled_at=?,calendar_event_id=NULL WHERE id=?`,
+        [remark, sqlDateTime(cancelledAt), id]
+      );
+      await insertBookingAudit(connection, audit);
+    });
+  },
   async setCalendarEvent(id, calendarEventId) {
     await pool.execute('UPDATE bookings SET calendar_event_id=? WHERE id=?', [calendarEventId || null, id]);
   },
@@ -220,9 +303,24 @@ const bookings = {
       cancelled_at=?,calendar_event_id=NULL WHERE id=? AND tenant_id=? AND status='Confirmed'`,
     [remark, sqlDateTime(cancelledAt), id, tenantId]);
     if (!result.affectedRows) throw appError('Booking is no longer confirmed.', 409);
-  },
-  async remove(id) {
-    await pool.execute('DELETE FROM bookings WHERE id=?', [id]);
+  }
+};
+
+const audit = {
+  async listForBooking(bookingId) {
+    const [rows] = await pool.execute(
+      `SELECT id,booking_id AS bookingId,admin_user_id AS adminUserId,
+        admin_username AS adminUsername,action,reason,previous_values AS previousValues,
+        new_values AS newValues,created_at AS createdAt
+       FROM booking_audit_log WHERE booking_id=? ORDER BY created_at DESC,id DESC`,
+      [bookingId]
+    );
+    return rows.map(item => ({
+      ...item,
+      previousValues: item.previousValues ? JSON.parse(item.previousValues) : null,
+      newValues: item.newValues ? JSON.parse(item.newValues) : null,
+      createdAt: dateTime(item.createdAt)
+    }));
   }
 };
 
@@ -328,6 +426,7 @@ module.exports = {
   tenants,
   rooms,
   bookings,
+  audit,
   sessions,
   integrations
 };

@@ -30,6 +30,9 @@ button{cursor:pointer;border:0}
 /* ── Top bar ── */
 .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:26px;gap:12px;flex-wrap:wrap}
 .top a{color:var(--green);text-decoration:none;font-weight:700}
+.top-actions{display:flex;align-items:center;gap:14px}
+.help-button{padding:7px 10px;border-radius:8px;background:transparent;color:var(--green);font-size:12px;font-weight:700}
+.help-button:hover,.help-button:focus-visible{text-decoration:underline;outline:2px solid #8bcdb1;outline-offset:2px}
 
 /* ── Hero ── */
 .hero{display:flex;justify-content:space-between;gap:20px;padding:25px;background:linear-gradient(120deg,#103e36,#0c8c68);border-radius:16px;color:#fff;flex-wrap:wrap}
@@ -48,6 +51,13 @@ button{cursor:pointer;border:0}
 .room-form{display:grid;grid-template-columns:repeat(2,1fr);gap:0 14px}
 .room-form .wide{grid-column:1/-1}
 .form-actions{display:flex;gap:9px;align-items:center;margin-top:17px;flex-wrap:wrap}
+.booking-flow{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:18px 0 8px;padding:10px;border:1px solid var(--line);border-radius:10px;background:#f8fbf9}
+.booking-flow span{display:flex;align-items:center;gap:5px;color:#91a19d;font-size:11px;font-weight:700}
+.booking-flow b{display:grid;place-items:center;width:21px;height:21px;border-radius:50%;background:#e6eee9;color:#71847d;font-size:10px}
+.booking-flow span.is-current{color:var(--green)}
+.booking-flow span.is-current b{background:var(--green);color:#fff}
+.booking-flow span.is-complete{color:#4d7d6d}
+.booking-flow span.is-complete b{background:var(--light);color:var(--green)}
 
 /* ── Interactive date and time pickers ── */
 .picker-wrap{position:relative}
@@ -89,6 +99,8 @@ body.picker-open{overflow:hidden}
 .time-option{padding:9px 5px;border:1px solid #e1ebe6;border-radius:8px;background:#fbfdfc;color:var(--ink);font-size:12px;font-weight:600}
 .time-option:hover{border-color:#8bcdb1;background:var(--light);color:var(--green)}
 .time-option.is-selected{border-color:var(--green);background:var(--green);color:#fff}
+.time-option:disabled{border-color:#edf1ef;background:#f4f6f5;color:#aebbb5;cursor:not-allowed;text-decoration:line-through}
+.time-option:disabled small{display:block;margin-top:2px;font-size:10px;font-weight:700;text-decoration:none}
 .suggestion-heading{display:block;margin-top:8px}
 .suggestion-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
 .suggestion-button{font-size:12px;padding:8px 10px}
@@ -98,6 +110,7 @@ body.picker-open{overflow:hidden}
 .status.info{background:#edf5f1;color:#41635a}
 .status.ok{background:#e0f5e8;color:#087b5a}
 .status.no{background:#fae8ea;color:var(--red)}
+.status.loading{background:#eef4f2;color:#41635a}
 
 /* ── How card ── */
 .how{background:#fffaf0;border-color:#efdfb3;line-height:1.55}
@@ -114,10 +127,45 @@ body.picker-open{overflow:hidden}
 .table td:first-child,.table th:first-child{padding-left:0}
 .table tr:last-child td{border:0}
 .empty{color:var(--muted);padding:24px 0;text-align:center}
+.empty-state-cell{padding:0!important}
+.empty-state{display:grid;place-items:center;gap:7px;padding:28px 12px;color:var(--muted);text-align:center;white-space:normal}
+.empty-state strong{color:var(--ink);font:800 16px Manrope}
+.empty-state .outline{margin-top:5px}
 
 /* ── Misc ── */
 .notice{font-size:12px;color:var(--muted);margin-top:12px}
 .alert{color:var(--red);margin-top:12px;font-weight:600;font-size:13px;min-height:18px}
+
+/* ── Confirmation dialog ── */
+.modal-open,.walkthrough-open{overflow:hidden}
+.confirm-modal{position:fixed;inset:0;z-index:160;display:grid;place-items:center;padding:20px;background:#102d264d;animation:picker-in .16s ease-out}
+.confirm-dialog{width:min(520px,100%);max-height:calc(100vh - 40px);overflow:auto;padding:24px;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 24px 70px #102d2640;animation:dialog-in .16s ease-out}
+.confirm-dialog h2{margin:4px 0 0;font:800 22px Manrope;letter-spacing:-.4px}
+.confirm-intro{margin:0 0 18px;color:var(--muted);line-height:1.5}
+.summary-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:14px}
+.summary-grid>div{display:grid;gap:4px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#f8fbf9}
+.summary-grid small{color:var(--muted);font-size:11px;font-weight:700}
+.summary-grid strong{font-size:14px}
+.confirm-note{margin-top:14px;padding:11px 12px;border-radius:9px;background:#edf5f1;color:#41635a;font-size:12px;line-height:1.45}
+.confirm-modal-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+.confirm-modal-actions button{min-width:130px}
+.modal-error{margin-top:14px;padding:11px 12px;border:1px solid #efbec6;border-radius:9px;background:#fae8ea;color:var(--red);font-size:13px;line-height:1.45}
+.success-mark{display:grid;place-items:center;width:54px;height:54px;margin-bottom:14px;border-radius:50%;background:var(--light);color:var(--green);font-size:31px;font-weight:800;animation:success-pop .35s ease-out}
+@keyframes success-pop{from{opacity:0;transform:scale(.75)}to{opacity:1;transform:scale(1)}}
+
+/* ── First-visit walkthrough ── */
+.walkthrough-overlay{position:fixed;inset:0;z-index:180;background:#102d2633}
+.walkthrough-spotlight{position:fixed;border:2px solid #fff;border-radius:14px;box-shadow:0 0 0 9999px #102d2659;pointer-events:none;transition:top .2s ease,left .2s ease,width .2s ease,height .2s ease}
+.walkthrough-card{position:fixed;width:min(360px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:22px;border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:0 24px 70px #102d2640;animation:dialog-in .16s ease-out}
+.walkthrough-progress{margin-bottom:9px;color:var(--green);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
+.walkthrough-card h2{margin:0 0 8px;font:800 21px Manrope;letter-spacing:-.4px}
+.walkthrough-card p{margin:0;color:var(--muted);line-height:1.55}
+.walkthrough-dots{display:flex;gap:5px;margin-top:18px}
+.walkthrough-dot{width:6px;height:6px;border-radius:50%;background:#d7e4de}
+.walkthrough-dot.is-current{width:18px;border-radius:5px;background:var(--green)}
+.walkthrough-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:20px}
+.walkthrough-actions>div{display:flex;gap:8px}
+.walkthrough-actions button{min-width:70px}
 
 /* ── Responsive: Tablet ── */
 @media(max-width:900px){
@@ -133,6 +181,8 @@ body.picker-open{overflow:hidden}
   .top{align-items:flex-start;flex-direction:column}
   .room-form{grid-template-columns:1fr}
   .form-actions{flex-wrap:wrap}
+  .top-actions{width:100%;justify-content:space-between}
+  .booking-flow{grid-template-columns:repeat(2,1fr);gap:8px}
 }
 
 @media(max-width:430px){
@@ -148,4 +198,10 @@ body.picker-open{overflow:hidden}
   .picker-popover{place-items:end center;padding:0}
   .picker-dialog-card{width:100%;max-height:82vh;border-radius:22px 22px 0 0;padding:18px 16px 22px}
   .time-options{max-height:48vh}
+  .confirm-modal{place-items:end center;padding:0}
+  .confirm-dialog{width:100%;max-height:86vh;border-radius:22px 22px 0 0;padding:20px 16px 24px}
+  .summary-grid{grid-template-columns:1fr}
+  .confirm-modal-actions{flex-direction:column-reverse}
+  .confirm-modal-actions button{width:100%}
+  .walkthrough-card{width:calc(100vw - 24px);padding:18px}
 }

@@ -5,6 +5,13 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const repository = require('./src/repositories/applicationRepository');
 const { testConnection, closePool } = require('./src/config/database');
+const {
+  BUSINESS_TIME_ZONE,
+  businessDateTime,
+  businessDateTimeIso,
+  isBookingStartInPast,
+  validWallClock
+} = require('./src/time/businessTime');
 
 const PORT = Number(process.env.PORT || 5177);
 const PUBLIC = path.join(__dirname, 'public');
@@ -81,6 +88,22 @@ function send(res, status, value) {
 
   res.end(
     JSON.stringify(value)
+  );
+}
+
+const BOOKING_TIME_IN_PAST =
+  'This time has already passed. Please select a future booking time.';
+
+function sendBookingTimeInPast(res) {
+  return send(
+    res,
+    409,
+    {
+      success: false,
+      code: 'BOOKING_TIME_IN_PAST',
+      error: BOOKING_TIME_IN_PAST,
+      message: BOOKING_TIME_IN_PAST
+    }
   );
 }
 
@@ -217,6 +240,75 @@ function bookedHours(
         0
       )
   );
+}
+
+function validBookingWindow(
+  date,
+  startTime,
+  endTime
+) {
+  return validWallClock(date, startTime) &&
+    validWallClock(date, endTime) &&
+    Boolean(
+      bookingHours(
+        startTime,
+        endTime
+      )
+    );
+}
+
+function adminBookingState(
+  booking,
+  now = businessDateTime()
+) {
+  if (booking.status === 'Cancelled') return 'Cancelled';
+  const start = `${booking.date}T${booking.startTime}`;
+  const end = `${booking.date}T${booking.endTime}`;
+  if (end <= now.value) return 'Completed';
+  if (start <= now.value) return 'Ongoing';
+  return 'Upcoming';
+}
+
+function adminBookingReview(
+  data,
+  booking
+) {
+  const reasons = [];
+  const tenant = data.tenants.find(item => item.id === booking.tenantId);
+  const room = data.rooms.find(item => item.id === booking.roomId);
+
+  if (!tenant) reasons.push('The tenant relationship is missing.');
+  if (!room) reasons.push('The workspace relationship is missing.');
+  if (!validBookingWindow(booking.date, booking.startTime, booking.endTime)) {
+    reasons.push('The booking date or time range is invalid.');
+  }
+  if (booking.status === 'Confirmed' && data.bookings.some(other =>
+    other.id !== booking.id &&
+    other.status === 'Confirmed' &&
+    other.roomId === booking.roomId &&
+    other.date === booking.date &&
+    other.startTime < booking.endTime &&
+    other.endTime > booking.startTime
+  )) {
+    reasons.push('This booking overlaps another confirmed booking.');
+  }
+
+  return {
+    needsReview: reasons.length > 0,
+    reviewReason: reasons.join(' ')
+  };
+}
+
+function bookingAuditValues(booking) {
+  return {
+    roomId: booking.roomId,
+    roomName: booking.roomName,
+    date: booking.date,
+    startTime: booking.startTime,
+    endTime: booking.endTime,
+    hours: Number(booking.hours),
+    status: booking.status
+  };
 }
 
 function tenantRemaining(
@@ -889,7 +981,10 @@ function bookingDateTime(
   date,
   time
 ) {
-  return `${date}T${time}:00+08:00`;
+  return businessDateTimeIso(
+    date,
+    time
+  );
 }
 
 async function googleBusyPeriods(
@@ -991,8 +1086,107 @@ async function googleBusyPeriods(
 async function googleAvailability(
   data,
   room,
-  booking
+  booking,
+  ignoredEventId = null
 ) {
+  if (ignoredEventId) {
+    const config = googleConfiguration(data, room);
+
+    if (!config) {
+      return {
+        enabled: false,
+        busy: false
+      };
+    }
+
+    const token = await googleToken(config);
+    const timeMin = new Date(
+      bookingDateTime(
+        booking.date,
+        booking.startTime
+      )
+    ).toISOString();
+    const timeMax = new Date(
+      bookingDateTime(
+        booking.date,
+        booking.endTime
+      )
+    ).toISOString();
+    const query = new URLSearchParams({
+      timeMin,
+      timeMax,
+      singleEvents: 'true',
+      showDeleted: 'false',
+      orderBy: 'startTime',
+      maxResults: '2500'
+    });
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+        config.calendarId
+      )}/events?${query.toString()}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    if (!response.ok) {
+      throw Error(
+        'Google Calendar availability check failed'
+      );
+    }
+
+    const payload = await response.json();
+    const requestedStart = new Date(timeMin).getTime();
+    const requestedEnd = new Date(timeMax).getTime();
+    const busy = (payload.items || []).some(event => {
+      if (
+        event.id === ignoredEventId ||
+        event.status === 'cancelled' ||
+        event.transparency === 'transparent'
+      ) {
+        return false;
+      }
+
+      const startValue =
+        event.start?.dateTime ||
+        event.start?.date;
+      const endValue =
+        event.end?.dateTime ||
+        event.end?.date;
+
+      if (!startValue || !endValue) {
+        return false;
+      }
+
+      const eventStart = event.start?.dateTime
+        ? new Date(startValue).getTime()
+        : new Date(
+          businessDateTimeIso(
+            startValue,
+            '00:00'
+          )
+        ).getTime();
+      const eventEnd = event.end?.dateTime
+        ? new Date(endValue).getTime()
+        : new Date(
+          businessDateTimeIso(
+            endValue,
+            '00:00'
+          )
+        ).getTime();
+
+      return eventStart < requestedEnd &&
+        eventEnd > requestedStart;
+    });
+
+    return {
+      enabled: true,
+      busy
+    };
+  }
+
   const calendar =
     await googleBusyPeriods(
       data,
@@ -1881,12 +2075,11 @@ const server =
 
             if (
               !room ||
-              !/^\d{4}-\d{2}-\d{2}$/
-                .test(
-                  booking.date ||
-                  ''
-                ) ||
-              !hours
+              !validBookingWindow(
+                booking.date,
+                booking.startTime,
+                booking.endTime
+              )
             ) {
               return send(
                 res,
@@ -1894,6 +2087,33 @@ const server =
                 {
                   error:
                     'Choose a room, valid date, and valid start/end times'
+                }
+              );
+            }
+
+            if (
+              isBookingStartInPast(
+                booking.date,
+                booking.startTime
+              )
+            ) {
+              return send(
+                res,
+                200,
+                {
+                  success: false,
+                  available: false,
+                  code: 'BOOKING_TIME_IN_PAST',
+                  error: BOOKING_TIME_IN_PAST,
+                  message: BOOKING_TIME_IN_PAST,
+                  reason: BOOKING_TIME_IN_PAST,
+                  remainingHours: tenantRemaining(
+                    data,
+                    tenant
+                  ),
+                  hours,
+                  suggestions: [],
+                  calendarChecked: false
                 }
               );
             }
@@ -2134,12 +2354,11 @@ const server =
 
             if (
               !room ||
-              !/^\d{4}-\d{2}-\d{2}$/
-                .test(
-                  input.date ||
-                  ''
-                ) ||
-              !hours
+              !validBookingWindow(
+                input.date,
+                input.startTime,
+                input.endTime
+              )
             ) {
               return send(
                 res,
@@ -2149,6 +2368,15 @@ const server =
                     'Choose a room, valid date, and valid start/end times'
                 }
               );
+            }
+
+            if (
+              isBookingStartInPast(
+                input.date,
+                input.startTime
+              )
+            ) {
+              return sendBookingTimeInPast(res);
             }
 
             if (
@@ -2266,7 +2494,7 @@ const server =
                   booking,
                   data.bookingSettings
                     .timezone ||
-                  'Asia/Manila'
+                  BUSINESS_TIME_ZONE
                 );
 
               if (
@@ -2510,7 +2738,17 @@ const server =
                             room =>
                               room.id ===
                               booking.roomId
-                          )
+                          ),
+
+                        bookingState:
+                          adminBookingState(
+                            booking
+                          ),
+
+                        ...adminBookingReview(
+                          data,
+                          booking
+                        )
                       })
                     )
                     .sort(
@@ -2973,10 +3211,15 @@ const server =
               /^\/api\/bookings\/([^/]+)$/
             );
 
+          const bookingCancelMatch =
+            url.pathname.match(
+              /^\/api\/bookings\/([^/]+)\/cancel$/
+            );
+
           if (
             bookingMatch &&
             req.method ===
-              'DELETE'
+              'GET'
           ) {
             if (
               !allow(
@@ -2989,7 +3232,7 @@ const server =
                 403,
                 {
                   error:
-                    'Only admins can delete bookings'
+                    'Only admins can view booking details'
                 }
               );
             }
@@ -3012,6 +3255,13 @@ const server =
               );
             }
 
+            const tenant =
+              data.tenants.find(
+                item =>
+                  item.id ===
+                  booking.tenantId
+              );
+
             const room =
               data.rooms.find(
                 item =>
@@ -3019,23 +3269,445 @@ const server =
                   booking.roomId
               );
 
+            return send(
+              res,
+              200,
+              {
+                booking: {
+                  ...booking,
+                  tenant: tenant
+                    ? cleanTenant(tenant)
+                    : null,
+                  room: room || null,
+                  bookingState:
+                    adminBookingState(
+                      booking
+                    ),
+                  ...adminBookingReview(
+                    data,
+                    booking
+                  )
+                },
+                audit:
+                  await repository.audit.listForBooking(
+                    booking.id
+                  )
+              }
+            );
+          }
+
+          if (
+            bookingMatch &&
+            req.method ===
+              'PATCH'
+          ) {
+            if (
+              !allow(
+                user,
+                ['admin']
+              )
+            ) {
+              return send(
+                res,
+                403,
+                {
+                  error:
+                    'Only admins can edit bookings'
+                }
+              );
+            }
+
+            const current =
+              data.bookings.find(
+                item =>
+                  item.id ===
+                  bookingMatch[1]
+              );
+
+            if (!current) {
+              return send(
+                res,
+                404,
+                {
+                  error:
+                    'Booking not found'
+                }
+              );
+            }
+
+            if (current.status !== 'Confirmed') {
+              return send(
+                res,
+                409,
+                {
+                  error:
+                    'Only confirmed bookings can be edited'
+                }
+              );
+            }
+
+            const input =
+              await body(req);
+            const roomId =
+              String(
+                input.roomId ||
+                current.roomId
+              );
+            const date =
+              String(
+                input.date ||
+                ''
+              );
+            const startTime =
+              String(
+                input.startTime ||
+                ''
+              );
+            const endTime =
+              String(
+                input.endTime ||
+                ''
+              );
+            const hours =
+              bookingHours(
+                startTime,
+                endTime
+              );
+            const room =
+              data.rooms.find(
+                item =>
+                  item.id ===
+                  roomId
+              );
+
+            if (
+              !room ||
+              !validBookingWindow(
+                date,
+                startTime,
+                endTime
+              )
+            ) {
+              return send(
+                res,
+                400,
+                {
+                  error:
+                    'Choose a workspace, valid date, and valid start/end times'
+                }
+              );
+            }
+
+            const tenant =
+              data.tenants.find(
+                item =>
+                  item.id ===
+                  current.tenantId
+              );
+            if (!tenant) {
+              return send(
+                res,
+                409,
+                {
+                  error:
+                    'This booking has no active tenant relationship and cannot be edited'
+                }
+              );
+            }
+
+            const updated = {
+              ...current,
+              roomId,
+              roomName: room.name,
+              date,
+              startTime,
+              endTime,
+              hours,
+              calendarEventId: null
+            };
+            const reason =
+              String(
+                input.reason ||
+                ''
+              ).trim();
+            if (!reason) {
+              return send(
+                res,
+                400,
+                {
+                  error:
+                    'A reason is required when an admin edits a booking'
+                }
+              );
+            }
+            let newCalendarEventId = null;
+
+            const google =
+              await googleAvailability(
+                data,
+                room,
+                updated,
+                current.calendarEventId
+              );
+            if (google.busy) {
+              return send(
+                res,
+                409,
+                {
+                  error:
+                    'This time is busy in Google Calendar. Please choose another time.'
+                }
+              );
+            }
+
+            try {
+              if (
+                google.enabled
+              ) {
+                newCalendarEventId =
+                  await createCalendarEvent(
+                    data,
+                    room,
+                    tenant,
+                    updated,
+                    data.bookingSettings
+                      .timezone ||
+                    BUSINESS_TIME_ZONE
+                  );
+              }
+              updated.calendarEventId =
+                newCalendarEventId;
+
+              await repository
+                .bookings
+                .updateConfirmedByAdmin(
+                  current,
+                  updated,
+                  {
+                    bookingId:
+                      current.id,
+                    adminUserId:
+                      user.id,
+                    adminUsername:
+                      user.username,
+                    action:
+                      'BOOKING_UPDATED_BY_ADMIN',
+                    reason,
+                    previousValues:
+                      bookingAuditValues(
+                        current
+                      ),
+                    newValues:
+                      bookingAuditValues(
+                        updated
+                      )
+                  }
+                );
+            } catch (error) {
+              if (
+                newCalendarEventId
+              ) {
+                await deleteCalendarEvent(
+                  data,
+                  room,
+                  newCalendarEventId
+                ).catch(() => {});
+              }
+              throw error;
+            }
+
+            if (
+              current.calendarEventId &&
+              current.calendarEventId !==
+                newCalendarEventId
+            ) {
+              await deleteCalendarEvent(
+                data,
+                data.rooms.find(
+                  item =>
+                    item.id ===
+                    current.roomId
+                ),
+                current.calendarEventId
+              ).catch(error =>
+                console.error(
+                  `Old Google Calendar event cleanup failed: ${error.message}`
+                )
+              );
+            }
+
+            return send(
+              res,
+              200,
+              {
+                booking: {
+                  ...updated,
+                  tenant:
+                    cleanTenant(
+                      tenant
+                    ),
+                  room,
+                  bookingState:
+                    adminBookingState(
+                      updated
+                    ),
+                  needsReview: false,
+                  reviewReason: ''
+                },
+                calendarSynced:
+                  Boolean(
+                    newCalendarEventId
+                  )
+              }
+            );
+          }
+
+          if (
+            bookingCancelMatch &&
+            req.method ===
+              'POST'
+          ) {
+            if (
+              !allow(
+                user,
+                ['admin']
+              )
+            ) {
+              return send(
+                res,
+                403,
+                {
+                  error:
+                    'Only admins can cancel bookings'
+                }
+              );
+            }
+
+            const booking =
+              data.bookings.find(
+                item =>
+                  item.id ===
+                  bookingCancelMatch[1]
+              );
+            if (!booking) {
+              return send(
+                res,
+                404,
+                {
+                  error:
+                    'Booking not found'
+                }
+              );
+            }
+
+            const input =
+              await body(req);
+            const remark =
+              String(
+                input.remark ||
+                ''
+              ).trim();
+            if (!remark) {
+              return send(
+                res,
+                400,
+                {
+                  error:
+                    'A cancellation reason is required'
+                }
+              );
+            }
+
+            const room =
+              data.rooms.find(
+                item =>
+                  item.id ===
+                  booking.roomId
+              );
             await deleteCalendarEvent(
               data,
               room,
               booking.calendarEventId
             );
-
             await repository
               .bookings
-              .remove(
-                booking.id
+              .cancelByAdmin(
+                booking.id,
+                remark,
+                {
+                  bookingId:
+                    booking.id,
+                  adminUserId:
+                    user.id,
+                  adminUsername:
+                    user.username,
+                  action:
+                    'BOOKING_CANCELLED_BY_ADMIN',
+                  reason: remark,
+                  previousValues:
+                    bookingAuditValues(
+                      booking
+                    ),
+                  newValues:
+                    bookingAuditValues({
+                      ...booking,
+                      status:
+                        'Cancelled',
+                      calendarEventId:
+                        null
+                    })
+                },
+                new Date()
+                  .toISOString()
               );
 
             return send(
               res,
               200,
               {
-                ok: true
+                booking: {
+                  ...booking,
+                  status:
+                    'Cancelled',
+                  cancellationRemark:
+                    remark,
+                  calendarEventId:
+                    null,
+                  bookingState:
+                    'Cancelled',
+                  room
+                }
+              }
+            );
+          }
+
+          if (
+            bookingMatch &&
+            req.method ===
+              'DELETE'
+          ) {
+            if (
+              !allow(
+                user,
+                ['admin']
+              )
+            ) {
+              return send(
+                res,
+                403,
+                {
+                  error:
+                    'Only admins can delete bookings'
+                }
+              );
+            }
+
+            return send(
+              res,
+              410,
+              {
+                error:
+                  'Permanent booking deletion is disabled. Cancel the booking to preserve its history.'
               }
             );
           }

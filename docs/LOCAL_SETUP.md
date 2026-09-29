@@ -49,7 +49,7 @@ $mysql = 'C:\xampp\mysql\bin\mysql.exe'
 $tables = @(
   'companies', 'employees', 'users',
   'tenants', 'rooms', 'bookings', 'booking_settings',
-  'google_oauth_credentials'
+  'google_oauth_credentials', 'booking_audit_log'
 )
 $grants = ($tables | ForEach-Object {
   "GRANT SELECT, INSERT, UPDATE, DELETE ON bayan_spaces_dev.$_ TO 'bayan_spaces_app'@'localhost'"

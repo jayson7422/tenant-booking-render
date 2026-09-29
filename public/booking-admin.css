@@ -92,3 +92,76 @@ h1{font:800 27px Manrope;letter-spacing:-1px;margin:0 0 7px}
   h1{font-size:22px}
   .modal-actions{flex-direction:column}
 }
+
+/* Booking oversight */
+.section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:11px}
+.section-heading h2{margin-bottom:4px}
+.section-note{margin:0;color:var(--muted);line-height:1.45}
+.metric-warning{color:var(--red)}
+.booking-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(130px,1fr)) auto;align-items:end;gap:10px;padding:14px;background:#fff;border:1px solid var(--line);border-radius:12px;margin-bottom:10px}
+.filter-field{display:grid;gap:5px}
+.filter-field span{font-size:11px;font-weight:700;color:var(--muted)}
+.filter-field input,.filter-field select{width:100%;min-width:0;padding:10px 11px;border:1px solid #d4e4dc;border-radius:9px;background:#fff;outline-color:var(--green)}
+.clear-filters{height:39px;white-space:nowrap}
+.booking-summary{color:var(--muted);font-size:12px;font-weight:600;margin:9px 2px}
+.booking-table th,.booking-table td{vertical-align:middle}
+.booking-table td:nth-child(1){min-width:160px}
+.booking-table td:nth-child(8){white-space:nowrap}
+.row-actions{display:flex;align-items:center;gap:5px}
+.row-actions .outline,.row-actions .danger{font-size:12px}
+.status-badge,.review-badge{display:inline-flex;align-items:center;border-radius:99px;padding:4px 8px;font-size:11px;font-weight:700;white-space:nowrap}
+.status-upcoming{background:#e1f4e9;color:var(--green)}
+.status-ongoing{background:#dff0ff;color:#1e6188}
+.status-completed{background:#edf0ef;color:#5e6d6b}
+.status-cancelled{background:#f9e4e7;color:var(--red)}
+.review-badge{background:#edf7f2;color:var(--green)}
+.review-badge.warning{background:#fff1d7;color:#9b6906;cursor:help}
+.pagination{display:flex;justify-content:center;align-items:center;gap:14px;padding:13px 0 2px;color:var(--muted);font-size:12px;font-weight:700}
+.pagination button:disabled{opacity:.45;cursor:not-allowed}
+
+/* Detail and mutation dialogs */
+.modal-form{margin:0}
+.modal-intro{margin:0 0 14px;color:var(--muted);line-height:1.5}
+.modal-title-row{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:13px}
+.modal-title-row h2{margin:0}
+.modal-title-row .eyebrow{margin:0 0 5px}
+.modal-loading{padding:25px 4px;color:var(--muted);text-align:center}
+.modal-error{min-height:19px}
+.field-full{grid-column:1/-1}
+.field textarea{width:100%;padding:11px 12px;border:1px solid #d4e4dc;border-radius:9px;background:#fff;outline-color:var(--green);font:inherit;resize:vertical}
+.field-help{color:var(--muted);font-size:11px;line-height:1.35}
+.review-callout{margin:0 0 16px;padding:11px 12px;border-radius:9px;background:#edf7f2;color:#286451;font-size:12px;line-height:1.45}
+.review-callout.warning{background:#fff1d7;color:#805c13}
+.detail-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px 15px;padding:13px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.detail-grid div{display:grid;gap:3px}
+.detail-grid small,.audit-entry small{color:var(--muted);font-size:11px;font-weight:700}
+.detail-grid strong{font-size:13px;overflow-wrap:anywhere}
+.audit-section{margin-top:18px}
+.audit-section h3{font:800 15px Manrope;margin:0 0 9px}
+.audit-entry{padding:12px 0;border-top:1px solid var(--line)}
+.audit-entry:first-of-type{border-top:0}
+.audit-entry-head{display:flex;justify-content:space-between;gap:10px;font-size:12px}
+.audit-entry-head span,.audit-meta{color:var(--muted);font-size:11px}
+.audit-meta{margin-top:4px;line-height:1.4}
+.audit-change{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:9px}
+.audit-change>div{padding:9px;background:#f7faf8;border-radius:8px}
+.audit-values{display:grid;gap:3px;margin-top:5px;font-size:11px}
+.audit-values b{color:var(--muted);font-weight:600}
+.cancel-summary{display:grid;gap:4px;padding:12px;background:#fff6f6;border:1px solid #f2d7dc;border-radius:9px;margin-bottom:12px}
+.cancel-summary span{color:var(--muted);font-size:12px}
+.check-field{display:flex;align-items:flex-start;gap:8px;margin-top:13px;color:var(--muted);font-size:12px;line-height:1.4}
+.check-field input{margin-top:2px;accent-color:var(--green)}
+.danger-modal #modal-submit{background:var(--red)}
+
+@media(max-width:1050px){
+  .booking-filters{grid-template-columns:2fr 1fr 1fr 1fr}
+  .clear-filters{grid-column:4}
+}
+@media(max-width:700px){
+  .section-heading{flex-direction:column}
+  .booking-filters{grid-template-columns:1fr 1fr}
+  .filter-search{grid-column:1/-1}
+  .clear-filters{grid-column:auto}
+  .row-actions{align-items:flex-start;flex-direction:column}
+  .detail-grid,.audit-change{grid-template-columns:1fr}
+}
