@@ -122,7 +122,7 @@ function proxyToCore(req, res) {
         502,
         {
           error:
-            'The on-prem BayanSpaces service is temporarily unavailable.'
+            'The on-prem Launchpad Spaces service is temporarily unavailable.'
         }
       );
     }
@@ -175,7 +175,7 @@ const server = http.createServer(
         200,
         {
           ok: true,
-          service: 'bayan-onprem-gateway',
+          service: 'launchpad-spaces-gateway',
           coreHost: CORE_HOST,
           corePort: CORE_PORT
         }
@@ -191,7 +191,7 @@ server.listen(
   '127.0.0.1',
   () => {
     console.log(
-      `BayanSpaces on-prem gateway is running on http://127.0.0.1:${GATEWAY_PORT}`
+      `Launchpad Spaces on-prem gateway is running on http://127.0.0.1:${GATEWAY_PORT}`
     );
 
     console.log(

@@ -5,9 +5,20 @@ const $ = selector => document.querySelector(selector);
 
 let token = localStorage.bookingAdminToken || '';
 let state = null;
+let adminIdentity = null;
 let bookingPage = 1;
 let bookingFilters = { search: '', status: 'All', roomId: '', date: '' };
+let bookingReviewOnly = false;
+let tenantPage = 1;
+let roomPage = 1;
+let managementFilters = { tenantSearch: '', roomSearch: '' };
+let analyticsRange = 30;
+let pollTimer = null;
+let pollInFlight = false;
+let pendingBackgroundRender = false;
 const bookingPageSize = 10;
+const managementPageSize = 10;
+const adminPollInterval = 45000;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -57,18 +68,35 @@ function login() {
     try {
       const result = await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(event.target))) });
       if (result.user.role !== 'admin') throw new Error('Only system administrators can manage tenant bookings.');
-      token = result.token; localStorage.bookingAdminToken = token; await load();
+      token = result.token; adminIdentity = result.user; localStorage.bookingAdminToken = token; await load();
     } catch (error) {
       hideLoader(); errorElement.textContent = friendlyError(error); button.disabled = false; button.textContent = 'Sign in'; submitting = false;
     }
   };
 }
 
-async function load() {
+async function load(options = {}) {
   showLoader();
-  try { state = await api('/api/booking-admin'); render(); }
+  try {
+    const nextState = await api('/api/booking-admin');
+    if (!adminIdentity) {
+      try { adminIdentity = await api('/api/me'); } catch { adminIdentity = { id: 'current-admin', username: 'administrator' }; }
+    }
+    const isBackground = options.background === true && state;
+    state = nextState;
+    updateNotificationState(nextState);
+    if (isBackground && modal.innerHTML) {
+      pendingBackgroundRender = true;
+      updateLiveStatus();
+      hideLoader();
+    } else {
+      render();
+    }
+    scheduleAdminPolling();
+  }
   catch (error) {
     hideLoader();
+    if (options.background) return;
     if (error.status === 401 || error.status === 403 || error.message === 'Only admins can manage tenant bookings' || error.message === 'Please sign in') {
       localStorage.removeItem('bookingAdminToken'); token = ''; login();
     } else alert(friendlyError(error));
@@ -85,8 +113,103 @@ function formatPhtDateTime(value) {
 function bookingStatusClass(status) { return 'status-' + String(status || '').toLowerCase().replace(/\s+/g, '-'); }
 function bookingTenant(booking) { return booking.tenant?.fullName || booking.tenantName || 'Unknown tenant'; }
 function bookingRoom(booking) { return booking.room?.name || booking.roomName || 'Unknown workspace'; }
+function dateOnly(value) {
+  const text = String(value || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? text.slice(0, 10) : localDateOnly(parsed);
+}
+function localDateOnly(value = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(value);
+}
+function dateOffset(base, offset) {
+  const date = new Date(base + 'T00:00:00+08:00');
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+function shortDate(value) {
+  if (!value) return '—';
+  const date = new Date(value + 'T00:00:00+08:00');
+  return new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', month: 'short', day: 'numeric' }).format(date);
+}
+function relativeTime(value) {
+  const elapsed = Math.max(0, Date.now() - new Date(value || Date.now()).getTime());
+  const minutes = Math.floor(elapsed / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return minutes + ' min ago';
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + ' hr ago';
+  const days = Math.floor(hours / 24);
+  return days + ' day' + (days === 1 ? '' : 's') + ' ago';
+}
+function notificationStorageKey() {
+  return 'launchpadAdminNotifications:' + (adminIdentity?.id || adminIdentity?.username || 'current-admin');
+}
+function notificationKey(booking, type) {
+  return type + ':' + booking.id + ':' + (type === 'cancelled' ? (booking.cancelledAt || booking.status) : '1');
+}
+function notificationItems(source = state) {
+  if (!source) return [];
+  return source.bookings
+    .flatMap(booking => {
+      const items = [{
+        key: notificationKey(booking, 'created'), type: 'New booking', bookingId: booking.id,
+        title: bookingTenant(booking) + ' booked ' + bookingRoom(booking),
+        detail: shortDate(booking.date) + ' · ' + booking.startTime + '–' + booking.endTime,
+        timestamp: booking.createdAt
+      }];
+      if (booking.status === 'Cancelled') items.push({
+        key: notificationKey(booking, 'cancelled'), type: 'Booking cancelled', bookingId: booking.id,
+        title: bookingTenant(booking) + ' cancelled a booking',
+        detail: shortDate(booking.date) + ' · ' + bookingRoom(booking),
+        timestamp: booking.cancelledAt || booking.createdAt
+      });
+      if (booking.needsReview) items.push({
+        key: notificationKey(booking, 'review'), type: 'Needs review', bookingId: booking.id,
+        title: 'Review booking for ' + bookingTenant(booking), detail: booking.reviewReason || 'Data checks found an exception.',
+        timestamp: booking.createdAt
+      });
+      return items;
+    })
+    .sort((left, right) => new Date(right.timestamp || 0) - new Date(left.timestamp || 0))
+    .slice(0, 20);
+}
+function readNotificationState() {
+  try { return JSON.parse(localStorage.getItem(notificationStorageKey()) || 'null') || null; } catch { return null; }
+}
+function writeNotificationState(value) { localStorage.setItem(notificationStorageKey(), JSON.stringify(value)); }
+function updateNotificationState(source = state) {
+  const items = notificationItems(source);
+  const stored = readNotificationState();
+  if (!stored) {
+    writeNotificationState({ seen: items.map(item => item.key), initializedAt: new Date().toISOString() });
+  } else {
+    writeNotificationState({ ...stored, seen: Array.from(new Set([...(stored.seen || []), ...[]])).slice(-100) });
+  }
+}
+function unreadNotifications() {
+  const stored = readNotificationState() || { seen: [] };
+  return notificationItems().filter(item => !stored.seen.includes(item.key));
+}
+function markNotificationsRead() {
+  const stored = readNotificationState() || { seen: [] };
+  writeNotificationState({ ...stored, seen: Array.from(new Set([...(stored.seen || []), ...notificationItems().map(item => item.key)])).slice(-100) });
+}
+function scheduleAdminPolling() {
+  if (pollTimer) return;
+  pollTimer = window.setInterval(() => {
+    if (document.hidden || pollInFlight || !token) return;
+    pollInFlight = true;
+    load({ background: true }).finally(() => { pollInFlight = false; });
+  }, adminPollInterval);
+}
+function updateLiveStatus() {
+  const element = $('#live-status');
+  if (element) element.textContent = 'Updated ' + relativeTime(new Date().toISOString()).toLowerCase();
+}
+function scrollToSection(id) { document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 
-function render() {
+function renderLegacy() {
   const allotted = state.tenants.reduce((total, tenant) => total + Number(tenant.allottedHours || 0), 0);
   const used = state.tenants.reduce((total, tenant) => total + Number(tenant.usedHours || 0), 0);
   const confirmed = state.bookings.filter(booking => booking.status === 'Confirmed').length;
@@ -124,7 +247,7 @@ function render() {
     '<div class="booking-filters"><label class="filter-field filter-search"><span>Search</span><input id="booking-search" type="search" placeholder="Tenant, email, room, or booking ID" value="' + esc(bookingFilters.search) + '"></label>' +
     '<label class="filter-field"><span>Status</span><select id="booking-status">' + statusOptions + '</select></label><label class="filter-field"><span>Workspace</span><select id="booking-room"><option value="">All workspaces</option>' + roomOptions + '</select></label>' +
     '<label class="filter-field"><span>Exact date</span><input id="booking-date" type="date" value="' + esc(bookingFilters.date) + '"></label><button class="outline clear-filters" id="clear-booking-filters">Clear filters</button></div>' +
-    '<div id="booking-summary" class="booking-summary"></div><div id="booking-list"></div></section></div>';
+    '<div id="booking-summary" class="booking-summary" aria-live="polite"></div><div id="booking-list"></div></section></div>';
 
   $('#out').onclick = () => { localStorage.removeItem('bookingAdminToken'); token = ''; login(); };
   $('#add-tenant').onclick = () => tenantForm();
@@ -137,16 +260,132 @@ function render() {
   bindBookingFilters(); renderBookingList(); hideLoader();
 }
 
+function render() {
+  const allotted = state.tenants.reduce((total, tenant) => total + Number(tenant.allottedHours || 0), 0);
+  const used = state.tenants.reduce((total, tenant) => total + Number(tenant.usedHours || 0), 0);
+  const confirmed = state.bookings.filter(booking => booking.status === 'Confirmed').length;
+  const reviews = state.bookings.filter(booking => booking.needsReview).length;
+  const activeTenants = state.tenants.filter(tenant => tenant.status === 'Active').length;
+  const usagePercent = allotted ? Math.min(100, Math.round((used / allotted) * 100)) : 0;
+  const notifications = unreadNotifications();
+  const statusOptions = ['All', 'Upcoming', 'Ongoing', 'Completed', 'Cancelled'].map(status =>
+    '<option value="' + status + '"' + (bookingFilters.status === status ? ' selected' : '') + '>' + status + '</option>').join('');
+  const roomOptions = state.rooms.map(room => '<option value="' + esc(room.id) + '"' + (bookingFilters.roomId === room.id ? ' selected' : '') + '>' + esc(room.name) + '</option>').join('');
+
+  root.innerHTML = '<div class="shell">' +
+    '<header class="top"><div class="brand">Launchpad<i> Spaces</i></div><div class="top-right"><button class="notification-button" id="notifications" aria-expanded="false" aria-controls="notification-panel" aria-label="Notifications' + (notifications.length ? ', ' + notifications.length + ' unread' : '') + '"><span aria-hidden="true">Notifications</span>' + (notifications.length ? '<b>' + notifications.length + '</b>' : '') + '</button><span class="pill">Booking admin</span><button class="outline" id="out">Sign out</button></div></header>' +
+    '<nav class="admin-nav" aria-label="Admin sections"><a href="#overview">Overview</a><a href="#tenants">Tenants</a><a href="#rooms">Rooms</a><a href="#activity">Activity</a><a href="#bookings-section">Bookings</a></nav>' +
+    '<section class="panel-head" id="overview"><div><div class="eyebrow">Operations dashboard</div><h1>Tenant booking control</h1><p>Monitor workspace activity and manage the tenant booking system from one place.</p></div>' +
+    '<div class="actions"><button class="outline" id="add-room">+ Add room</button><button class="primary" id="add-tenant">+ Add tenant</button></div></section>' +
+    '<section class="stats"><div class="card metric"><small>Active tenants</small><b>' + activeTenants + '</b><span>Tenant accounts in service</span></div>' +
+    '<div class="card metric"><small>Confirmed bookings</small><b>' + confirmed + '</b><span>Current reservations</span></div><button type="button" class="card metric metric-action" id="needs-review-card"><small>Needs review</small><b class="' + (reviews ? 'metric-warning' : '') + '">' + reviews + '</b><span>' + (reviews ? 'Open flagged bookings' : 'No exceptions detected') + '</span></button>' +
+    '<div class="card metric"><small>Hours used / allotted</small><b>' + used.toFixed(1) + ' / ' + allotted.toFixed(1) + ' h</b><span>' + usagePercent + '% utilized · ' + (state.calendarConnected ? 'Calendar connected' : 'Local availability only') + '</span><div class="metric-progress" aria-label="' + usagePercent + '% of allotted hours used"><i style="width:' + usagePercent + '%"></i></div></div></section>' +
+    '<section class="section dashboard-section" id="activity"><div class="section-heading"><div><h2>Operational activity</h2><p class="section-note">Use the latest booking data to see demand and workspace usage.</p></div><div class="analytics-range" role="group" aria-label="Analytics time range"><button type="button" class="outline' + (analyticsRange === 7 ? ' selected' : '') + '" data-range="7">7 days</button><button type="button" class="outline' + (analyticsRange === 30 ? ' selected' : '') + '" data-range="30">30 days</button><button type="button" class="outline' + (analyticsRange === 90 ? ' selected' : '') + '" data-range="90">90 days</button></div></div>' +
+    '<div class="analytics-grid"><article class="card analytics-card"><div class="analytics-card-head"><div><h3>Booking activity</h3><p>Bookings created within the selected period.</p></div><span class="analytics-updated" id="analytics-updated"></span></div><div id="booking-activity-chart"></div></article>' +
+    '<article class="card analytics-card"><div class="analytics-card-head"><div><h3>Workspace usage</h3><p>Confirmed hours by workspace.</p></div></div><div id="workspace-usage-chart"></div></article></div>' +
+    '<article class="card activity-feed"><div class="analytics-card-head"><div><h3>Recent activity</h3><p>Latest booking events from the system.</p></div><span class="live-status" id="live-status">Updated just now</span></div><div id="recent-activity-list"></div></article></section>' +
+    '<section class="section" id="tenants"><div class="section-heading"><div><h2>Tenant accounts</h2><p class="section-note">Search and manage tenant access, allocation, and usage.</p></div><button class="primary" id="add-tenant-secondary">+ Add tenant</button></div><div class="management-toolbar"><label class="filter-field"><span>Search tenants</span><input id="tenant-search" type="search" placeholder="Name, company, email, or location" value="' + esc(managementFilters.tenantSearch) + '"></label><span class="table-summary" id="tenant-summary"></span></div><div id="tenant-list"></div></section>' +
+    '<section class="section" id="rooms"><div class="section-heading"><div><h2>Available rooms</h2><p class="section-note">Manage workspaces and their calendar connections.</p></div><button class="outline" id="add-room-secondary">+ Add room</button></div><div class="management-toolbar"><label class="filter-field"><span>Search rooms</span><input id="room-search" type="search" placeholder="Room name or location" value="' + esc(managementFilters.roomSearch) + '"></label><span class="table-summary" id="room-summary"></span></div><div id="room-list"></div></section>' +
+    '<section class="section" id="bookings-section"><div class="section-heading"><div><h2>Booking oversight</h2><p class="section-note">Search, inspect, update, or cancel bookings. Cancellation preserves the record for audit history.</p></div><div class="section-heading-actions"><span class="live-status" id="booking-live-status">Updated just now</span><button class="outline" id="refresh-bookings">Refresh</button></div></div>' +
+    '<div class="booking-filters"><label class="filter-field filter-search"><span>Search</span><input id="booking-search" type="search" placeholder="Tenant, email, room, or booking ID" value="' + esc(bookingFilters.search) + '"></label>' +
+    '<label class="filter-field"><span>Status</span><select id="booking-status">' + statusOptions + '</select></label><label class="filter-field"><span>Workspace</span><select id="booking-room"><option value="">All workspaces</option>' + roomOptions + '</select></label>' +
+    '<label class="filter-field"><span>Exact date</span><input id="booking-date" type="date" value="' + esc(bookingFilters.date) + '"></label><button class="outline clear-filters" id="clear-booking-filters">Clear filters</button></div>' +
+    '<div class="review-filter-note" id="review-filter-note" hidden>Showing bookings that need review. <button type="button" class="link-button" id="clear-review-filter">Show all bookings</button></div>' +
+    '<div id="booking-summary" class="booking-summary" aria-live="polite"></div><div id="booking-list"></div></section></div>';
+
+  $('#out').onclick = () => { localStorage.removeItem('bookingAdminToken'); token = ''; adminIdentity = null; if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } login(); };
+  $('#add-tenant').onclick = () => tenantForm(); $('#add-tenant-secondary').onclick = () => tenantForm();
+  $('#add-room').onclick = () => roomForm(); $('#add-room-secondary').onclick = () => roomForm();
+  $('#needs-review-card').onclick = () => { bookingReviewOnly = true; bookingPage = 1; scrollToSection('bookings-section'); renderBookingList(); };
+  $('#notifications').onclick = toggleNotifications;
+  document.querySelectorAll('.analytics-range button').forEach(button => { button.onclick = () => { analyticsRange = Number(button.dataset.range); renderAnalytics(); }; });
+  bindManagementFilters(); bindBookingFilters(); renderManagementLists(); renderAnalytics(); renderBookingList(); hideLoader(); updateLiveStatus();
+}
+
+function bindManagementFilters() {
+  $('#tenant-search').oninput = event => { managementFilters.tenantSearch = event.target.value; tenantPage = 1; renderTenantList(); };
+  $('#room-search').oninput = event => { managementFilters.roomSearch = event.target.value; roomPage = 1; renderRoomList(); };
+}
+
+function renderManagementLists() { renderTenantList(); renderRoomList(); }
+
+function renderTenantList() {
+  const search = managementFilters.tenantSearch.trim().toLowerCase();
+  const tenants = state.tenants.filter(tenant => [tenant.fullName, tenant.companyName, tenant.email, tenant.location].join(' ').toLowerCase().includes(search));
+  const pageCount = Math.max(1, Math.ceil(tenants.length / managementPageSize));
+  tenantPage = Math.min(tenantPage, pageCount);
+  const visible = tenants.slice((tenantPage - 1) * managementPageSize, tenantPage * managementPageSize);
+  const rows = visible.length ? visible.map(tenant => '<tr><td><span class="name">' + esc(tenant.fullName) + '</span><br><small>' + esc(tenant.companyName || '—') + '</small></td><td>' + esc(tenant.email) + '<br><small>' + esc(tenant.location) + '</small></td><td>' + formatHours(tenant.allottedHours) + '</td><td>' + formatHours(tenant.usedHours) + '</td><td><span class="pill">' + formatHours(tenant.remainingHours) + '</span></td><td class="row-actions"><button class="outline edit-tenant" data-id="' + esc(tenant.id) + '">Edit</button><button class="outline email-tenant" data-id="' + esc(tenant.id) + '">Report</button><button class="danger delete-tenant" data-id="' + esc(tenant.id) + '">Delete</button></td></tr>').join('') : '<tr><td class="sub" colspan="6">No tenants match this search.</td></tr>';
+  $('#tenant-summary').textContent = tenants.length + ' tenant' + (tenants.length === 1 ? '' : 's') + ' · Page ' + tenantPage + ' of ' + pageCount;
+  $('#tenant-list').innerHTML = '<div class="table-wrap"><table class="table management-table"><thead><tr><th>Tenant / company</th><th>Email &amp; location</th><th>Allotted</th><th>Used</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table></div><div class="pagination"><button class="outline" id="tenant-prev"' + (tenantPage <= 1 ? ' disabled' : '') + '>Previous</button><span>Page ' + tenantPage + ' of ' + pageCount + '</span><button class="outline" id="tenant-next"' + (tenantPage >= pageCount ? ' disabled' : '') + '>Next</button></div>';
+  document.querySelectorAll('.edit-tenant').forEach(button => { button.onclick = () => tenantForm(state.tenants.find(tenant => tenant.id === button.dataset.id)); });
+  document.querySelectorAll('.delete-tenant').forEach(button => { button.onclick = () => remove('/api/tenants/' + button.dataset.id, 'Delete this tenant? Related booking history will remain.'); });
+  document.querySelectorAll('.email-tenant').forEach(button => { button.onclick = () => sendReport(button.dataset.id); });
+  $('#tenant-prev').onclick = () => { if (tenantPage > 1) { tenantPage--; renderTenantList(); } };
+  $('#tenant-next').onclick = () => { if (tenantPage < pageCount) { tenantPage++; renderTenantList(); } };
+}
+
+function renderRoomList() {
+  const search = managementFilters.roomSearch.trim().toLowerCase();
+  const rooms = state.rooms.filter(room => [room.name, room.location].join(' ').toLowerCase().includes(search));
+  const pageCount = Math.max(1, Math.ceil(rooms.length / managementPageSize));
+  roomPage = Math.min(roomPage, pageCount);
+  const visible = rooms.slice((roomPage - 1) * managementPageSize, roomPage * managementPageSize);
+  const rows = visible.length ? visible.map(room => '<tr><td class="name">' + esc(room.name) + '</td><td>' + esc(room.location) + '</td><td>' + esc(room.capacity || '—') + '</td><td><span class="calendar-state">' + (room.calendarId ? 'Room calendar' : 'Company default') + '</span></td><td class="row-actions"><button class="outline edit-room" data-id="' + esc(room.id) + '">Edit</button><button class="danger delete-room" data-id="' + esc(room.id) + '">Delete</button></td></tr>').join('') : '<tr><td class="sub" colspan="5">No rooms match this search.</td></tr>';
+  $('#room-summary').textContent = rooms.length + ' room' + (rooms.length === 1 ? '' : 's') + ' · Page ' + roomPage + ' of ' + pageCount;
+  $('#room-list').innerHTML = '<div class="table-wrap"><table class="table management-table"><thead><tr><th>Room</th><th>Location</th><th>Capacity</th><th>Calendar</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table></div><div class="pagination"><button class="outline" id="room-prev"' + (roomPage <= 1 ? ' disabled' : '') + '>Previous</button><span>Page ' + roomPage + ' of ' + pageCount + '</span><button class="outline" id="room-next"' + (roomPage >= pageCount ? ' disabled' : '') + '>Next</button></div>';
+  document.querySelectorAll('.edit-room').forEach(button => { button.onclick = () => roomForm(state.rooms.find(room => room.id === button.dataset.id)); });
+  document.querySelectorAll('.delete-room').forEach(button => { button.onclick = () => remove('/api/rooms/' + button.dataset.id, 'Delete this room?'); });
+  $('#room-prev').onclick = () => { if (roomPage > 1) { roomPage--; renderRoomList(); } };
+  $('#room-next').onclick = () => { if (roomPage < pageCount) { roomPage++; renderRoomList(); } };
+}
+
+function toggleNotifications() {
+  const button = $('#notifications');
+  const existing = $('#notification-panel');
+  if (existing) { existing.remove(); button.setAttribute('aria-expanded', 'false'); return; }
+  markNotificationsRead(); button.querySelector('b')?.remove(); button.setAttribute('aria-label', 'Notifications'); button.setAttribute('aria-expanded', 'true');
+  const items = notificationItems();
+  const panel = document.createElement('aside'); panel.id = 'notification-panel'; panel.className = 'notification-panel'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Notifications');
+  panel.innerHTML = '<div class="notification-head"><div><strong>Notifications</strong><small>Recent operational activity</small></div><button type="button" class="dialog-close" id="close-notifications" aria-label="Close notifications">×</button></div>' +
+    (items.length ? '<div class="notification-list">' + items.slice(0, 8).map(item => '<button type="button" class="notification-item" data-booking-id="' + esc(item.bookingId) + '"><span class="notification-type">' + esc(item.type) + '</span><strong>' + esc(item.title) + '</strong><span>' + esc(item.detail) + '</span><small>' + esc(relativeTime(item.timestamp)) + '</small></button>').join('') + '</div>' : '<div class="notification-empty"><strong>You’re all caught up</strong><span>New booking activity will appear here.</span></div>') +
+    '<button type="button" class="notification-footer" id="view-booking-activity">View booking activity</button>';
+  document.querySelector('.top')?.appendChild(panel);
+  $('#close-notifications').onclick = toggleNotifications;
+  $('#view-booking-activity').onclick = () => { toggleNotifications(); scrollToSection('bookings-section'); };
+  panel.querySelectorAll('.notification-item').forEach(item => { item.onclick = () => { const id = item.dataset.bookingId; toggleNotifications(); scrollToSection('bookings-section'); bookingDetails(id); }; });
+}
+
+function renderAnalytics() {
+  if (!state) return;
+  const today = localDateOnly();
+  const start = dateOffset(today, -(analyticsRange - 1));
+  const buckets = Array.from({ length: analyticsRange }, (_, index) => dateOffset(start, index));
+  const counts = buckets.map(day => state.bookings.filter(booking => dateOnly(booking.createdAt) === day).length);
+  const maxCount = Math.max(1, ...counts);
+  const labels = buckets.map((day, index) => '<span class="chart-label' + (index % Math.ceil(analyticsRange / 6) === 0 ? '' : ' is-muted') + '">' + (index % Math.ceil(analyticsRange / 6) === 0 ? esc(shortDate(day)) : '') + '</span>');
+  const bars = buckets.map((day, index) => '<div class="chart-column" title="' + esc(shortDate(day)) + ': ' + counts[index] + ' booking' + (counts[index] === 1 ? '' : 's') + '"><i style="height:' + Math.max(4, Math.round((counts[index] / maxCount) * 100)) + '%"></i></div>').join('');
+  $('#booking-activity-chart').innerHTML = counts.some(Boolean) ? '<div class="bar-chart" role="img" aria-label="Booking activity for the last ' + analyticsRange + ' days"><div class="chart-bars">' + bars + '</div><div class="chart-labels">' + labels.join('') + '</div></div><p class="chart-caption">' + counts.reduce((sum, count) => sum + count, 0) + ' booking events in this period.</p>' : '<div class="analytics-empty"><strong>Not enough booking activity yet</strong><span>Analytics will appear as booking data accumulates.</span></div>';
+  const usage = state.rooms.map(room => ({ room, hours: state.bookings.filter(booking => booking.roomId === room.id && booking.status === 'Confirmed').reduce((sum, booking) => sum + Number(booking.hours || 0), 0) })).sort((left, right) => right.hours - left.hours);
+  const maxUsage = Math.max(1, ...usage.map(item => item.hours));
+  $('#workspace-usage-chart').innerHTML = usage.length && usage.some(item => item.hours) ? '<div class="usage-bars" role="list">' + usage.map(item => '<div class="usage-row" role="listitem"><div><strong>' + esc(item.room.name) + '</strong><span>' + item.hours.toFixed(1) + ' h</span></div><div class="usage-track"><i style="width:' + Math.max(3, Math.round((item.hours / maxUsage) * 100)) + '%"></i></div></div>').join('') + '</div>' : '<div class="analytics-empty"><strong>No confirmed workspace usage yet</strong><span>Usage will appear after a tenant confirms a booking.</span></div>';
+  const recent = state.bookings.slice().sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)).slice(0, 5);
+  $('#recent-activity-list').innerHTML = recent.length ? '<div class="recent-list">' + recent.map(booking => '<button type="button" class="recent-item" data-booking-id="' + esc(booking.id) + '"><span class="recent-dot ' + (booking.status === 'Cancelled' ? 'cancelled' : '') + '"></span><span><strong>' + esc(bookingTenant(booking)) + ' · ' + esc(bookingRoom(booking)) + '</strong><small>' + esc(shortDate(booking.date) + ' · ' + booking.startTime + '–' + booking.endTime) + '</small></span><time>' + esc(relativeTime(booking.createdAt)) + '</time></button>').join('') + '</div>' : '<div class="analytics-empty"><strong>No recent activity</strong><span>New tenant bookings will appear here.</span></div>';
+  document.querySelectorAll('.recent-item').forEach(item => { item.onclick = () => bookingDetails(item.dataset.bookingId); });
+  $('#analytics-updated').textContent = analyticsRange + ' day view · ' + shortDate(start) + '–' + shortDate(today);
+}
+
 function bindBookingFilters() {
   $('#booking-search').oninput = event => { bookingFilters.search = event.target.value; bookingPage = 1; renderBookingList(); };
   $('#booking-status').onchange = event => { bookingFilters.status = event.target.value; bookingPage = 1; renderBookingList(); };
   $('#booking-room').onchange = event => { bookingFilters.roomId = event.target.value; bookingPage = 1; renderBookingList(); };
   $('#booking-date').onchange = event => { bookingFilters.date = event.target.value; bookingPage = 1; renderBookingList(); };
   $('#clear-booking-filters').onclick = () => {
-    bookingFilters = { search: '', status: 'All', roomId: '', date: '' }; bookingPage = 1;
+    bookingFilters = { search: '', status: 'All', roomId: '', date: '' }; bookingReviewOnly = false; bookingPage = 1;
     $('#booking-search').value = ''; $('#booking-status').value = 'All'; $('#booking-room').value = ''; $('#booking-date').value = '';
     renderBookingList();
   };
+  $('#clear-review-filter').onclick = () => { bookingReviewOnly = false; bookingPage = 1; renderBookingList(); };
   $('#refresh-bookings').onclick = () => load();
 }
 
@@ -155,7 +394,7 @@ function filteredBookings() {
   return state.bookings.filter(booking => {
     const tenant = booking.tenant || {};
     const searchable = [booking.id, bookingTenant(booking), tenant.email, tenant.companyName, bookingRoom(booking), booking.roomName].join(' ').toLowerCase();
-    return (!search || searchable.includes(search)) && (bookingFilters.status === 'All' || booking.bookingState === bookingFilters.status) &&
+    return (!search || searchable.includes(search)) && (!bookingReviewOnly || booking.needsReview) && (bookingFilters.status === 'All' || booking.bookingState === bookingFilters.status) &&
       (!bookingFilters.roomId || booking.roomId === bookingFilters.roomId) && (!bookingFilters.date || booking.date === bookingFilters.date);
   });
 }
@@ -167,6 +406,8 @@ function renderBookingList() {
   const visible = bookings.slice((bookingPage - 1) * bookingPageSize, bookingPage * bookingPageSize);
   const summary = $('#booking-summary'); const list = $('#booking-list');
   if (!summary || !list) return;
+  const reviewNote = $('#review-filter-note');
+  if (reviewNote) reviewNote.hidden = !bookingReviewOnly;
   summary.textContent = bookings.length + ' booking' + (bookings.length === 1 ? '' : 's') + ' found' + (bookings.length ? ' · Page ' + bookingPage + ' of ' + pageCount : '');
   const rows = visible.length ? visible.map(booking =>
     '<tr><td><span class="name">' + esc(bookingTenant(booking)) + '</span><br><small>' + esc(booking.tenant?.email || '') + '</small></td><td>' + esc(bookingRoom(booking)) + '</td>' +
@@ -184,13 +425,21 @@ function renderBookingList() {
   document.querySelectorAll('.booking-cancel').forEach(button => { button.onclick = () => cancelBooking(state.bookings.find(booking => booking.id === button.dataset.id)); });
   $('#booking-prev').onclick = () => { if (bookingPage > 1) { bookingPage--; renderBookingList(); } };
   $('#booking-next').onclick = () => { if (bookingPage < pageCount) { bookingPage++; renderBookingList(); } };
+  const liveStatus = $('#booking-live-status');
+  if (liveStatus) liveStatus.textContent = 'Updated just now';
 }
 
 function modalMarkup(content) {
-  modal.innerHTML = '<div class="modal-bg" id="modal-bg"><div class="modal-card">' + content + '</div></div>';
+  document.body.classList.add('modal-open');
+  modal.innerHTML = '<div class="modal-bg" id="modal-bg"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Booking administration dialog" tabindex="-1">' + content + '</div></div>';
   $('#modal-bg').onclick = event => { if (event.target.id === 'modal-bg') closeModal(); };
+  modal.onkeydown = event => { if (event.key === 'Escape') closeModal(); };
+  modal.querySelector('.modal-card')?.focus();
 }
-function closeModal() { modal.innerHTML = ''; }
+function closeModal() {
+  modal.innerHTML = ''; modal.onkeydown = null; document.body.classList.remove('modal-open');
+  if (pendingBackgroundRender && state) { pendingBackgroundRender = false; render(); }
+}
 function modalActions(cancelLabel, saveLabel) { return '<div class="modal-actions"><button type="button" class="outline" id="modal-cancel">' + (cancelLabel || 'Cancel') + '</button><button class="primary" id="modal-submit">' + (saveLabel || 'Save') + '</button></div>'; }
 function fieldMarkup(field) {
   const value = field.value ?? '';

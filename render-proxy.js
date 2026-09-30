@@ -312,7 +312,7 @@ const server =
           {
             ok: true,
             service:
-              'bayan-render-proxy'
+              'launchpad-spaces-render-proxy'
           }
         );
       }
@@ -391,7 +391,7 @@ server.listen(
   '0.0.0.0',
   () => {
     console.log(
-      `BayanSpaces Render proxy is running on port ${PORT}`
+      `Launchpad Spaces Render proxy is running on port ${PORT}`
     );
 
     console.log(
