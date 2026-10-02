@@ -12,6 +12,7 @@ let bookingReviewOnly = false;
 let tenantPage = 1;
 let roomPage = 1;
 let managementFilters = { tenantSearch: '', roomSearch: '' };
+let activeSection = localStorage.bookingAdminSection || 'overview';
 let analyticsRange = 30;
 let pollTimer = null;
 let pollInFlight = false;
@@ -207,7 +208,36 @@ function updateLiveStatus() {
   const element = $('#live-status');
   if (element) element.textContent = 'Updated ' + relativeTime(new Date().toISOString()).toLowerCase();
 }
-function scrollToSection(id) { document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+function sectionFromElementId(id) {
+  if (id === 'bookings-section') return 'bookings';
+  return id || 'overview';
+}
+
+function applyAdminSection() {
+  const validSections = ['overview', 'tenants', 'rooms', 'activity', 'bookings'];
+  if (!validSections.includes(activeSection)) activeSection = 'overview';
+  document.querySelectorAll('[data-admin-section]').forEach(section => {
+    const visible = section.dataset.adminSection === activeSection;
+    section.hidden = !visible;
+    section.setAttribute('aria-hidden', String(!visible));
+  });
+  document.querySelectorAll('[data-admin-section-link]').forEach(link => {
+    const selected = link.dataset.adminSectionLink === activeSection;
+    link.classList.toggle('is-active', selected);
+    if (selected) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+  localStorage.bookingAdminSection = activeSection;
+}
+
+function setAdminSection(section) {
+  activeSection = sectionFromElementId(section);
+  applyAdminSection();
+  const heading = document.querySelector(`[data-admin-section="${activeSection}"]`);
+  heading?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function scrollToSection(id) { setAdminSection(sectionFromElementId(id)); }
 
 function renderLegacy() {
   const allotted = state.tenants.reduce((total, tenant) => total + Number(tenant.allottedHours || 0), 0);
@@ -231,7 +261,7 @@ function renderLegacy() {
     '<button class="danger delete-room" data-id="' + esc(room.id) + '">Delete</button></td></tr>').join('') :
     '<tr><td class="sub" colspan="5">No rooms yet.</td></tr>';
 
-  root.innerHTML = '<div class="shell">' +
+  root.innerHTML = '<div class="admin-layout"><aside class="admin-sidebar" aria-label="Primary navigation"><div class="sidebar-brand">Launchpad<i> Spaces</i><small>Operations console</small></div><div class="sidebar-label">Workspace</div><nav class="sidebar-nav" aria-label="Admin sections"><button type="button" data-admin-section-link="overview"><span class="nav-icon">⌂</span>Overview</button><button type="button" data-admin-section-link="tenants"><span class="nav-icon">◉</span>Tenants</button><button type="button" data-admin-section-link="rooms"><span class="nav-icon">▦</span>Rooms</button><button type="button" data-admin-section-link="activity"><span class="nav-icon">↗</span>Activity</button><button type="button" data-admin-section-link="bookings"><span class="nav-icon">✓</span>Bookings</button></nav><div class="sidebar-footer"><div class="connection-indicator"><span class="connection-dot ' + (state.calendarConnected ? 'is-connected' : '') + '"></span><span>' + (state.calendarConnected ? 'Calendar connected' : 'Local availability') + '</span></div><a href="/" target="_blank" rel="noreferrer">Open tenant portal ↗</a></div></aside><main class="admin-main"><div class="shell">' +
     '<header class="top"><div class="brand">Launchpad<i> Tenant</i></div><div class="top-right"><span class="pill">Booking admin</span><button class="outline" id="out">Sign out</button></div></header>' +
     '<section class="panel-head"><div><h1>Tenant booking control</h1><p>Tenant portal: <a href="/" target="_blank" rel="noreferrer">' + esc(location.origin) + '</a></p></div>' +
     '<div class="actions"><button class="outline" id="add-room">+ Add room</button><button class="primary" id="add-tenant">+ Add tenant</button></div></section>' +
@@ -274,26 +304,31 @@ function render() {
   const roomOptions = state.rooms.map(room => '<option value="' + esc(room.id) + '"' + (bookingFilters.roomId === room.id ? ' selected' : '') + '>' + esc(room.name) + '</option>').join('');
 
   root.innerHTML = '<div class="shell">' +
-    '<header class="top"><div class="brand">Launchpad<i> Spaces</i></div><div class="top-right"><button class="notification-button" id="notifications" aria-expanded="false" aria-controls="notification-panel" aria-label="Notifications' + (notifications.length ? ', ' + notifications.length + ' unread' : '') + '"><span aria-hidden="true">Notifications</span>' + (notifications.length ? '<b>' + notifications.length + '</b>' : '') + '</button><span class="pill">Booking admin</span><button class="outline" id="out">Sign out</button></div></header>' +
-    '<nav class="admin-nav" aria-label="Admin sections"><a href="#overview">Overview</a><a href="#tenants">Tenants</a><a href="#rooms">Rooms</a><a href="#activity">Activity</a><a href="#bookings-section">Bookings</a></nav>' +
-    '<section class="panel-head" id="overview"><div><div class="eyebrow">Operations dashboard</div><h1>Tenant booking control</h1><p>Monitor workspace activity and manage the tenant booking system from one place.</p></div>' +
+    '<header class="top"><button type="button" class="brand brand-link" data-admin-section-link="overview" aria-label="Go to Launchpad Spaces home">Launchpad<i> Spaces</i></button><div class="top-right"><button class="notification-button" id="notifications" aria-expanded="false" aria-controls="notification-panel" aria-label="Notifications' + (notifications.length ? ', ' + notifications.length + ' unread' : '') + '"><span aria-hidden="true">Notifications</span>' + (notifications.length ? '<b>' + notifications.length + '</b>' : '') + '</button><span class="pill">Booking admin</span><button class="outline" id="out">Sign out</button></div></header>' +
+    '<nav class="admin-nav" aria-label="Admin sections"><button type="button" data-admin-section-link="overview">Overview</button><button type="button" data-admin-section-link="tenants">Tenants</button><button type="button" data-admin-section-link="rooms">Rooms</button><button type="button" data-admin-section-link="activity">Activity</button><button type="button" data-admin-section-link="bookings">Bookings</button></nav>' +
+    '<section class="panel-head" id="overview" data-admin-section="overview"><div><div class="eyebrow">Operations dashboard</div><h1>Tenant booking control</h1><p>Monitor workspace activity and manage the tenant booking system from one place.</p></div>' +
     '<div class="actions"><button class="outline" id="add-room">+ Add room</button><button class="primary" id="add-tenant">+ Add tenant</button></div></section>' +
-    '<section class="stats"><div class="card metric"><small>Active tenants</small><b>' + activeTenants + '</b><span>Tenant accounts in service</span></div>' +
+    '<section class="admin-welcome" data-admin-section="overview"><div class="welcome-mark" aria-hidden="true">LS</div><div class="welcome-copy"><div class="eyebrow">Welcome to Launchpad Spaces</div><h2>A clear place to manage every reservation.</h2><p>Use this workspace to manage tenants, keep room calendars accurate, and review bookings from one organized control center.</p><div class="welcome-guidance"><span><b>1</b><strong>Manage access</strong><small>Keep tenant accounts and allotted hours updated.</small></span><span><b>2</b><strong>Check spaces</strong><small>Review rooms and their Google Calendar connections.</small></span><span><b>3</b><strong>Review bookings</strong><small>Inspect, edit, or cancel reservations when needed.</small></span></div></div><button type="button" class="outline welcome-action" data-admin-section-link="bookings">Open bookings</button></section>' +
+    '<section class="stats" data-admin-section="overview"><div class="card metric"><small>Active tenants</small><b>' + activeTenants + '</b><span>Tenant accounts in service</span></div>' +
     '<div class="card metric"><small>Confirmed bookings</small><b>' + confirmed + '</b><span>Current reservations</span></div><button type="button" class="card metric metric-action" id="needs-review-card"><small>Needs review</small><b class="' + (reviews ? 'metric-warning' : '') + '">' + reviews + '</b><span>' + (reviews ? 'Open flagged bookings' : 'No exceptions detected') + '</span></button>' +
     '<div class="card metric"><small>Hours used / allotted</small><b>' + used.toFixed(1) + ' / ' + allotted.toFixed(1) + ' h</b><span>' + usagePercent + '% utilized · ' + (state.calendarConnected ? 'Calendar connected' : 'Local availability only') + '</span><div class="metric-progress" aria-label="' + usagePercent + '% of allotted hours used"><i style="width:' + usagePercent + '%"></i></div></div></section>' +
-    '<section class="section dashboard-section" id="activity"><div class="section-heading"><div><h2>Operational activity</h2><p class="section-note">Use the latest booking data to see demand and workspace usage.</p></div><div class="analytics-range" role="group" aria-label="Analytics time range"><button type="button" class="outline' + (analyticsRange === 7 ? ' selected' : '') + '" data-range="7">7 days</button><button type="button" class="outline' + (analyticsRange === 30 ? ' selected' : '') + '" data-range="30">30 days</button><button type="button" class="outline' + (analyticsRange === 90 ? ' selected' : '') + '" data-range="90">90 days</button></div></div>' +
+    '<section class="section dashboard-section" id="activity" data-admin-section="activity"><div class="section-heading"><div><div class="eyebrow">Insights</div><h2>Operational activity</h2><p class="section-note">Use the latest booking data to see demand and workspace usage.</p></div><div class="analytics-range" role="group" aria-label="Analytics time range"><button type="button" class="outline' + (analyticsRange === 7 ? ' selected' : '') + '" data-range="7">7 days</button><button type="button" class="outline' + (analyticsRange === 30 ? ' selected' : '') + '" data-range="30">30 days</button><button type="button" class="outline' + (analyticsRange === 90 ? ' selected' : '') + '" data-range="90">90 days</button></div></div>' +
     '<div class="analytics-grid"><article class="card analytics-card"><div class="analytics-card-head"><div><h3>Booking activity</h3><p>Bookings created within the selected period.</p></div><span class="analytics-updated" id="analytics-updated"></span></div><div id="booking-activity-chart"></div></article>' +
     '<article class="card analytics-card"><div class="analytics-card-head"><div><h3>Workspace usage</h3><p>Confirmed hours by workspace.</p></div></div><div id="workspace-usage-chart"></div></article></div>' +
     '<article class="card activity-feed"><div class="analytics-card-head"><div><h3>Recent activity</h3><p>Latest booking events from the system.</p></div><span class="live-status" id="live-status">Updated just now</span></div><div id="recent-activity-list"></div></article></section>' +
-    '<section class="section" id="tenants"><div class="section-heading"><div><h2>Tenant accounts</h2><p class="section-note">Search and manage tenant access, allocation, and usage.</p></div><button class="primary" id="add-tenant-secondary">+ Add tenant</button></div><div class="management-toolbar"><label class="filter-field"><span>Search tenants</span><input id="tenant-search" type="search" placeholder="Name, company, email, or location" value="' + esc(managementFilters.tenantSearch) + '"></label><span class="table-summary" id="tenant-summary"></span></div><div id="tenant-list"></div></section>' +
-    '<section class="section" id="rooms"><div class="section-heading"><div><h2>Available rooms</h2><p class="section-note">Manage workspaces and their calendar connections.</p></div><button class="outline" id="add-room-secondary">+ Add room</button></div><div class="management-toolbar"><label class="filter-field"><span>Search rooms</span><input id="room-search" type="search" placeholder="Room name or location" value="' + esc(managementFilters.roomSearch) + '"></label><span class="table-summary" id="room-summary"></span></div><div id="room-list"></div></section>' +
-    '<section class="section" id="bookings-section"><div class="section-heading"><div><h2>Booking oversight</h2><p class="section-note">Search, inspect, update, or cancel bookings. Cancellation preserves the record for audit history.</p></div><div class="section-heading-actions"><span class="live-status" id="booking-live-status">Updated just now</span><button class="outline" id="refresh-bookings">Refresh</button></div></div>' +
+    '<section class="section" id="tenants" data-admin-section="tenants"><div class="section-heading"><div><div class="eyebrow">Directory</div><h2>Tenant accounts</h2><p class="section-note">Search and manage tenant access, allocation, and usage.</p></div><button class="primary" id="add-tenant-secondary">+ Add tenant</button></div><div class="management-toolbar"><label class="filter-field"><span>Search tenants</span><input id="tenant-search" type="search" placeholder="Name, company, email, or location" value="' + esc(managementFilters.tenantSearch) + '"></label><span class="table-summary" id="tenant-summary"></span></div><div id="tenant-list"></div></section>' +
+    '<section class="section" id="rooms" data-admin-section="rooms"><div class="section-heading"><div><div class="eyebrow">Inventory</div><h2>Available rooms</h2><p class="section-note">Manage workspaces and their calendar connections.</p></div><button class="outline" id="add-room-secondary">+ Add room</button></div><div class="management-toolbar"><label class="filter-field"><span>Search rooms</span><input id="room-search" type="search" placeholder="Room name or location" value="' + esc(managementFilters.roomSearch) + '"></label><span class="table-summary" id="room-summary"></span></div><div id="room-list"></div></section>' +
+    '<section class="section" id="bookings-section" data-admin-section="bookings"><div class="section-heading"><div><div class="eyebrow">Reservations</div><h2>Booking oversight</h2><p class="section-note">Search, inspect, update, or cancel bookings. Cancellation preserves the record for audit history.</p></div><div class="section-heading-actions"><span class="live-status" id="booking-live-status">Updated just now</span><button class="outline" id="refresh-bookings">Refresh</button></div></div>' +
     '<div class="booking-filters"><label class="filter-field filter-search"><span>Search</span><input id="booking-search" type="search" placeholder="Tenant, email, room, or booking ID" value="' + esc(bookingFilters.search) + '"></label>' +
     '<label class="filter-field"><span>Status</span><select id="booking-status">' + statusOptions + '</select></label><label class="filter-field"><span>Workspace</span><select id="booking-room"><option value="">All workspaces</option>' + roomOptions + '</select></label>' +
     '<label class="filter-field"><span>Exact date</span><input id="booking-date" type="date" value="' + esc(bookingFilters.date) + '"></label><button class="outline clear-filters" id="clear-booking-filters">Clear filters</button></div>' +
     '<div class="review-filter-note" id="review-filter-note" hidden>Showing bookings that need review. <button type="button" class="link-button" id="clear-review-filter">Show all bookings</button></div>' +
-    '<div id="booking-summary" class="booking-summary" aria-live="polite"></div><div id="booking-list"></div></section></div>';
+    '<div id="booking-summary" class="booking-summary" aria-live="polite"></div><div id="booking-list"></div></section></div></main></div>';
 
+  document.querySelectorAll('[data-admin-section-link]').forEach(link => {
+    link.onclick = () => setAdminSection(link.dataset.adminSectionLink);
+  });
+  applyAdminSection();
   $('#out').onclick = () => { localStorage.removeItem('bookingAdminToken'); token = ''; adminIdentity = null; if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } login(); };
   $('#add-tenant').onclick = () => tenantForm(); $('#add-tenant-secondary').onclick = () => tenantForm();
   $('#add-room').onclick = () => roomForm(); $('#add-room-secondary').onclick = () => roomForm();
