@@ -603,6 +603,9 @@ function googleConfiguration(
     .filter(Boolean)
     .filter((value, index, values) => values.indexOf(value) === index);
   const calendarId = calendarIds[0] || 'primary';
+  const masterCalendarId =
+    process.env.GOOGLE_MASTER_CALENDAR_ID ||
+    'primary';
 
   const oauth =
     googleOAuthSettings();
@@ -623,7 +626,8 @@ function googleConfiguration(
       ...oauth,
       refreshToken,
       calendarId,
-      calendarIds
+      calendarIds,
+      masterCalendarId
     };
   }
 
@@ -661,7 +665,8 @@ function googleConfiguration(
         'service-account',
       serviceAccount,
       calendarId,
-      calendarIds
+      calendarIds,
+      masterCalendarId
     }
     : null;
 }
@@ -1116,11 +1121,178 @@ async function googleBusyPeriods(
     return calendar;
   });
 
+  const masterBusy =
+    await googleMasterBusyPeriods(
+      config,
+      room,
+      {
+        date,
+        startTime,
+        endTime
+      },
+      token
+    );
+
   return {
     enabled: true,
     busy:
       calendars.flatMap(calendar => calendar.busy || [])
+        .concat(masterBusy)
   };
+}
+
+const ROOM_EVENT_KEYWORDS = {
+  'Rocket Room': ['\\brr\\b', '\\brocket room\\b', '\\brocketroom\\b'],
+  'Apollo 4 & 5': ['\\bapollo 4\\b', '\\bapollo 5\\b', 'apollo 4 & 5', 'apollo 4&5', '\\bapollo\\b'],
+  'Astra 1': ['\\bastra 1\\b', '\\bastra1\\b', 'astra 1 & 2', 'astra 1&2', 'combined astra'],
+  'Astra 2': ['\\bastra 2\\b', '\\bastra2\\b', 'astra 1 & 2', 'astra 1&2', 'combined astra'],
+  'Combined Astra 1 & 2': ['\\bastra 1\\b', '\\bastra 2\\b', '\\bastra1\\b', '\\bastra2\\b', 'astra 1 & 2', 'astra 1&2', 'combined astra'],
+  'Meeting Room 1': ['\\bmr 1\\b', '\\bmr1\\b', '\\bmeeting room 1\\b', 'mr 1 & 2', 'mr 1&2', 'combined mr'],
+  'Meeting Room 2': ['\\bmr 2\\b', '\\bmr2\\b', '\\bmeeting room 2\\b', 'mr 1 & 2', 'mr 1&2', 'combined mr'],
+  'Combined Meeting Room 1 & 2': ['\\bmr 1\\b', '\\bmr 2\\b', '\\bmr1\\b', '\\bmr2\\b', '\\bmeeting room 1\\b', '\\bmeeting room 2\\b', 'mr 1 & 2', 'mr 1&2', 'combined mr']
+};
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function roomEventKeywords(room) {
+  return ROOM_EVENT_KEYWORDS[room?.name] || (
+    room?.name
+      ? [escapeRegExp(room.name)]
+      : []
+  );
+}
+
+function googleEventRange(event) {
+  const startValue =
+    event.start?.dateTime ||
+    event.start?.date;
+  const endValue =
+    event.end?.dateTime ||
+    event.end?.date;
+
+  if (!startValue || !endValue) return null;
+
+  const start = event.start?.dateTime
+    ? new Date(startValue).getTime()
+    : new Date(
+      businessDateTimeIso(
+        startValue,
+        '00:00'
+      )
+    ).getTime();
+  const end = event.end?.dateTime
+    ? new Date(endValue).getTime()
+    : new Date(
+      businessDateTimeIso(
+        endValue,
+        '00:00'
+      )
+    ).getTime();
+
+  return Number.isFinite(start) && Number.isFinite(end)
+    ? { start, end }
+    : null;
+}
+
+async function googleMasterBusyPeriods(
+  config,
+  room,
+  booking,
+  token,
+  ignoredEventId = null
+) {
+  const keywords = roomEventKeywords(room);
+  if (!keywords.length) return [];
+
+  const ignoredEventIds = new Set(
+    String(ignoredEventId || '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean)
+  );
+  const requestedStart = new Date(
+    bookingDateTime(booking.date, booking.startTime)
+  ).getTime();
+  const requestedEnd = new Date(
+    bookingDateTime(booking.date, booking.endTime)
+  ).getTime();
+  const query = new URLSearchParams({
+    timeMin: new Date(requestedStart).toISOString(),
+    timeMax: new Date(requestedEnd).toISOString(),
+    singleEvents: 'true',
+    showDeleted: 'false',
+    orderBy: 'startTime',
+    maxResults: '2500'
+  });
+
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(config.masterCalendarId)}/events?${query.toString()}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    throw Error(
+      'Google Calendar master schedule check failed'
+    );
+  }
+
+  const payload = await response.json();
+  return (payload.items || []).flatMap(event => {
+    if (
+      ignoredEventIds.has(event.id) ||
+      event.status === 'cancelled' ||
+      event.transparency === 'transparent' ||
+      !event.summary
+    ) {
+      return [];
+    }
+
+    const title = event.summary.toLowerCase();
+    const isRoomEvent = keywords.some(keyword =>
+      new RegExp(keyword, 'i').test(title)
+    );
+    if (!isRoomEvent) return [];
+
+    const range = googleEventRange(event);
+    if (!range || !(range.start < requestedEnd && range.end > requestedStart)) {
+      return [];
+    }
+
+    return [{
+      start: new Date(range.start).toISOString(),
+      end: new Date(range.end).toISOString()
+    }];
+  });
+}
+
+async function googleMasterCalendarBusy(
+  config,
+  room,
+  booking,
+  token,
+  ignoredEventId = null
+) {
+  const periods = await googleMasterBusyPeriods(
+    config,
+    room,
+    booking,
+    token,
+    ignoredEventId
+  );
+  return periods.some(period =>
+    new Date(period.start).getTime() < new Date(
+      bookingDateTime(booking.date, booking.endTime)
+    ).getTime() &&
+    new Date(period.end).getTime() > new Date(
+      bookingDateTime(booking.date, booking.startTime)
+    ).getTime()
+  );
 }
 
 async function googleAvailability(
@@ -1232,6 +1404,16 @@ async function googleAvailability(
         busy = true;
         break;
       }
+    }
+
+    if (!busy) {
+      busy = await googleMasterCalendarBusy(
+        config,
+        room,
+        booking,
+        token,
+        ignoredEventId
+      );
     }
 
     return {
