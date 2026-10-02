@@ -42,6 +42,21 @@ function timeMinutes(value) {
   return match ? Number(match[1]) * 60 + Number(match[2]) : NaN;
 }
 
+function validTimeRange(startTime, endTime) {
+  const start = timeMinutes(startTime);
+  const end = timeMinutes(endTime);
+  return Number.isFinite(start) && Number.isFinite(end) && end > start;
+}
+
+function nextAvailableEndTime(startTime) {
+  const start = timeMinutes(startTime);
+  if (!Number.isFinite(start)) return '';
+  const next = start + 30;
+  return next <= 23 * 60 + 30
+    ? `${String(Math.floor(next / 60)).padStart(2, '0')}:${String(next % 60).padStart(2, '0')}`
+    : '';
+}
+
 function isPastBookingTime(date, time) {
   const current = businessNow();
   if (date < current.date) return true;
@@ -77,6 +92,9 @@ async function api(url, options = {}) {
 function friendlyBookingError(error) {
   if (error?.code === 'BOOKING_TIME_IN_PAST') {
     return 'This booking time has already passed. Please select another available time.';
+  }
+  if (error?.code === 'BOOKING_END_BEFORE_START') {
+    return 'Choose an end time later than the start time.';
   }
   if (error?.message?.includes('just been booked') || error?.message?.includes('busy in Google Calendar')) {
     return 'This time is no longer available. Please select another time.';
@@ -185,6 +203,29 @@ function setTimeValue(form, fieldName, value) {
   form.elements[fieldName].value = value;
   const display = form.querySelector(`[data-time-display="${fieldName}"]`);
   if (display) display.textContent = formatTime(value);
+
+  if (fieldName === 'startTime') {
+    const currentEnd = form.elements.endTime.value;
+    if (!validTimeRange(value, currentEnd)) {
+      const nextEnd = nextAvailableEndTime(value);
+      form.elements.endTime.value = nextEnd;
+      const endDisplay = form.querySelector('[data-time-display="endTime"]');
+      if (endDisplay) endDisplay.textContent = formatTime(nextEnd);
+    }
+  }
+
+  updateTimeRangeState(form);
+}
+
+function updateTimeRangeState(form) {
+  const error = form?.querySelector('[data-time-range-error]');
+  if (!error) return validTimeRange(form.elements.startTime.value, form.elements.endTime.value);
+
+  const valid = validTimeRange(form.elements.startTime.value, form.elements.endTime.value);
+  error.hidden = valid;
+  error.textContent = valid ? '' : 'End time must be later than the selected start time.';
+  form.elements.endTime.closest('.field')?.classList.toggle('has-error', !valid);
+  return valid;
 }
 
 function setupPickers(form) {
@@ -259,14 +300,21 @@ function setupPickers(form) {
   const timePopovers = [...form.querySelectorAll('[data-time-popover]')];
   const renderTimeOptions = (popover, fieldName) => {
     const selected = form.elements[fieldName].value;
+    const start = timeMinutes(form.elements.startTime.value);
     const options = Array.from({ length: 48 }, (_, index) => {
       const hours = Math.floor(index / 2);
       const minutes = index % 2 ? '30' : '00';
       const value = `${String(hours).padStart(2, '0')}:${minutes}`;
       const past = isPastBookingTime(dateInput.value, value);
-      return `<button type="button" class="time-option ${value === selected ? 'is-selected' : ''}" data-time-value="${value}" ${past ? 'disabled aria-disabled="true"' : ''}><span>${formatTime(value)}</span>${past ? '<small>Past</small>' : ''}</button>`;
+      const beforeStart = fieldName === 'endTime' && (!Number.isFinite(start) || timeMinutes(value) <= start);
+      const disabled = past || beforeStart;
+      const hint = past ? 'Past' : beforeStart ? 'Before start' : '';
+      return `<button type="button" class="time-option ${value === selected ? 'is-selected' : ''}" data-time-value="${value}" ${disabled ? 'disabled aria-disabled="true"' : ''}><span>${formatTime(value)}</span>${hint ? `<small>${hint}</small>` : ''}</button>`;
     }).join('');
-    popover.innerHTML = `<div class="picker-dialog-card"><div class="dialog-title-row"><div><small class="dialog-kicker">Time selection</small><strong class="dialog-title">Choose a time</strong></div><button type="button" class="dialog-close" data-time-close aria-label="Close time picker">×</button></div><div class="time-head"><small>Choose an available 30-minute interval</small></div><div class="time-options">${options}</div></div>`;
+    const guidance = fieldName === 'endTime'
+      ? `Only intervals after ${formatTime(form.elements.startTime.value)} are selectable.`
+      : 'Choose an available 30-minute interval.';
+    popover.innerHTML = `<div class="picker-dialog-card"><div class="dialog-title-row"><div><small class="dialog-kicker">Time selection</small><strong class="dialog-title">Choose a time</strong></div><button type="button" class="dialog-close" data-time-close aria-label="Close time picker">×</button></div><div class="time-head"><small>${guidance}</small></div><div class="time-options">${options}</div></div>`;
     popover.querySelectorAll('[data-time-value]').forEach(button => {
       button.onclick = () => {
         setTimeValue(form, fieldName, button.dataset.timeValue);
@@ -312,6 +360,7 @@ function setupPickers(form) {
   datePopover.hidden = true;
   renderCalendar();
   timePopovers.forEach(popover => { popover.hidden = true; });
+  updateTimeRangeState(form);
   timeRestrictionTimer = window.setInterval(() => {
     if (dateInput.value === today() && isPastBookingTime(dateInput.value, form.elements.startTime.value)) {
       reset();
@@ -554,6 +603,10 @@ function renderBookingSuccess(modal, form, values) {
 async function submitBookingFromModal(form, values, modal) {
   if (confirmSubmitting) return;
   const latest = Object.fromEntries(new FormData(form));
+  if (!validTimeRange(latest.startTime, latest.endTime)) {
+    showConfirmError(modal, form, 'Choose an end time later than the start time.');
+    return;
+  }
   if (isPastBookingTime(latest.date, latest.startTime)) {
     showConfirmError(modal, form, 'This booking time has already passed. Please select another available time.');
     return;
@@ -603,7 +656,7 @@ function openConfirmModal(form) {
 function render() {
   const tenant = data.tenant;
   const currentDate = today();
-  root.innerHTML = `<div class="portal-shell"><header class="top"><div class="brand">Launchpad<i> Tenant</i></div><a href="#" id="out">Sign out</a></header><section class="hero"><div><span class="badge">${data.calendarConnected ? 'Google Calendar connected' : 'LAN availability checking'}</span><h1>Welcome, ${esc(tenant.fullName)}</h1><p>${esc(tenant.companyName || 'Individual tenant')} · ${esc(tenant.location)}</p></div><div class="remaining"><small>Remaining allotted time</small><strong>${Number(tenant.remainingHours).toFixed(1)} h</strong></div></section><div class="grid"><section class="card"><h2>Choose a room and time</h2><div class="sub">Your booking is confirmed only after the selected interval is available.</div><form id="booking" class="room-form"><div class="field wide"><label>Available room</label><select name="roomId" required>${data.rooms.map(room => `<option value="${room.id}">${esc(room.name)} — ${esc(room.location)}${room.capacity ? ` (${room.capacity} seats)` : ''}</option>`).join('')}</select></div><div class="field"><label>Date</label><div class="picker-wrap"><button type="button" class="picker-trigger" data-date-trigger aria-haspopup="dialog" aria-expanded="false"><span class="picker-trigger-copy"><small>Booking date</small><strong data-date-display>${formatDate(currentDate)}</strong></span><span class="picker-icon">▦</span></button><div class="picker-popover date-popover" data-date-popover role="dialog" aria-label="Choose booking date"></div></div><input type="hidden" name="date" value="${currentDate}"></div><div class="field"><label>Start time</label><div class="picker-wrap"><button type="button" class="picker-trigger" data-time-trigger="startTime" aria-haspopup="dialog"><span class="picker-trigger-copy"><small>From</small><strong data-time-display="startTime">${formatTime('09:00')}</strong></span><span class="picker-icon">◷</span></button><div class="picker-popover time-popover" data-time-popover="startTime" role="dialog" aria-label="Choose start time"></div></div><input type="hidden" name="startTime" value="09:00"></div><div class="field"><label>End time</label><div class="picker-wrap"><button type="button" class="picker-trigger" data-time-trigger="endTime" aria-haspopup="dialog"><span class="picker-trigger-copy"><small>Until</small><strong data-time-display="endTime">${formatTime('10:00')}</strong></span><span class="picker-icon">◷</span></button><div class="picker-popover time-popover" data-time-popover="endTime" role="dialog" aria-label="Choose end time"></div></div><input type="hidden" name="endTime" value="10:00"></div><div class="field"><label>Tenant location</label><input value="${esc(tenant.location)}" disabled></div><div class="form-actions wide"><button type="button" class="outline" id="check">Check availability</button><button class="primary" id="book" disabled>Confirm booking</button></div></form><div class="status info" id="availability">Select a room, date, and time, then validate availability.</div><div class="notice">Hours are deducted automatically when a booking is confirmed.</div></section><aside class="card how"><h2>Booking guide</h2><ol><li>Choose the room, date, and exact hours.</li><li>Check availability against the local schedule${data.calendarConnected ? ' and company Google Calendar' : ''}.</li><li>Confirm to deduct only the hours you use.</li></ol><b>Allotted:</b> ${Number(tenant.allottedHours).toFixed(1)} h<br><b>Used:</b> ${(Number(tenant.allottedHours) - Number(tenant.remainingHours)).toFixed(1)} h</aside></div><section class="card history-card"><h2>Your booking history</h2><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Time</th><th>Room</th><th>Hours</th><th>Status / remark</th><th></th></tr></thead><tbody>${data.bookings.length ? data.bookings.map(booking => `<tr><td>${esc(booking.date)}</td><td>${esc(booking.startTime)}–${esc(booking.endTime)}</td><td>${esc(booking.room?.name || booking.roomName)}</td><td>${Number(booking.hours).toFixed(1)}</td><td><span class="badge ${booking.status === 'Cancelled' ? 'badge-cancelled' : 'badge-confirmed'}">${esc(booking.status)}</span>${booking.cancellationRemark ? `<br><small>${esc(booking.cancellationRemark)}</small>` : ''}</td><td>${booking.status === 'Confirmed' ? `<button type="button" class="outline cancel-booking" data-id="${booking.id}">Cancel</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No bookings yet.</td></tr>'}</tbody></table></div></section></div>`;
+  root.innerHTML = `<div class="portal-shell"><header class="top"><div class="brand">Launchpad<i> Tenant</i></div><a href="#" id="out">Sign out</a></header><section class="hero"><div><span class="badge">${data.calendarConnected ? 'Google Calendar connected' : 'LAN availability checking'}</span><h1>Welcome, ${esc(tenant.fullName)}</h1><p>${esc(tenant.companyName || 'Individual tenant')} · ${esc(tenant.location)}</p></div><div class="remaining"><small>Remaining allotted time</small><strong>${Number(tenant.remainingHours).toFixed(1)} h</strong></div></section><div class="grid"><section class="card"><h2>Choose a room and time</h2><div class="sub">Your booking is confirmed only after the selected interval is available.</div><form id="booking" class="room-form"><div class="field wide"><label>Available room</label><select name="roomId" required>${data.rooms.map(room => `<option value="${room.id}">${esc(room.name)} — ${esc(room.location)}${room.capacity ? ` (${room.capacity} seats)` : ''}</option>`).join('')}</select></div><div class="field"><label>Date</label><div class="picker-wrap"><button type="button" class="picker-trigger" data-date-trigger aria-haspopup="dialog" aria-expanded="false"><span class="picker-trigger-copy"><small>Booking date</small><strong data-date-display>${formatDate(currentDate)}</strong></span><span class="picker-icon">▦</span></button><div class="picker-popover date-popover" data-date-popover role="dialog" aria-label="Choose booking date"></div></div><input type="hidden" name="date" value="${currentDate}"></div><div class="field"><label>Start time</label><div class="picker-wrap"><button type="button" class="picker-trigger" data-time-trigger="startTime" aria-haspopup="dialog"><span class="picker-trigger-copy"><small>From</small><strong data-time-display="startTime">${formatTime('09:00')}</strong></span><span class="picker-icon">◷</span></button><div class="picker-popover time-popover" data-time-popover="startTime" role="dialog" aria-label="Choose start time"></div></div><input type="hidden" name="startTime" value="09:00"></div><div class="field"><label>End time</label><div class="picker-wrap"><button type="button" class="picker-trigger" data-time-trigger="endTime" aria-haspopup="dialog"><span class="picker-trigger-copy"><small>Until</small><strong data-time-display="endTime">${formatTime('10:00')}</strong></span><span class="picker-icon">◷</span></button><div class="picker-popover time-popover" data-time-popover="endTime" role="dialog" aria-label="Choose end time"></div></div><input type="hidden" name="endTime" value="10:00"><small class="field-error" data-time-range-error hidden role="alert"></small></div><div class="field"><label>Tenant location</label><input value="${esc(tenant.location)}" disabled></div><div class="form-actions wide"><button type="button" class="outline" id="check">Check availability</button><button class="primary" id="book" disabled>Confirm booking</button></div></form><div class="status info" id="availability">Select a room, date, and time, then validate availability.</div><div class="notice">Hours are deducted automatically when a booking is confirmed.</div></section><aside class="card how"><h2>Booking guide</h2><ol><li>Choose the room, date, and exact hours.</li><li>Check availability against the local schedule${data.calendarConnected ? ' and company Google Calendar' : ''}.</li><li>Confirm to deduct only the hours you use.</li></ol><b>Allotted:</b> ${Number(tenant.allottedHours).toFixed(1)} h<br><b>Used:</b> ${(Number(tenant.allottedHours) - Number(tenant.remainingHours)).toFixed(1)} h</aside></div><section class="card history-card"><h2>Your booking history</h2><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Time</th><th>Room</th><th>Hours</th><th>Status / remark</th><th></th></tr></thead><tbody>${data.bookings.length ? data.bookings.map(booking => `<tr><td>${esc(booking.date)}</td><td>${esc(booking.startTime)}–${esc(booking.endTime)}</td><td>${esc(booking.room?.name || booking.roomName)}</td><td>${Number(booking.hours).toFixed(1)}</td><td><span class="badge ${booking.status === 'Cancelled' ? 'badge-cancelled' : 'badge-confirmed'}">${esc(booking.status)}</span>${booking.cancellationRemark ? `<br><small>${esc(booking.cancellationRemark)}</small>` : ''}</td><td>${booking.status === 'Confirmed' ? `<button type="button" class="outline cancel-booking" data-id="${booking.id}">Cancel</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No bookings yet.</td></tr>'}</tbody></table></div></section></div>`;
 
   const formShell = root.querySelector('#booking');
   const topHeader = root.querySelector('.top');
@@ -671,6 +724,15 @@ function render() {
   document.querySelector('#check').onclick = async () => {
     if (checking) return;
     const values = Object.fromEntries(new FormData(form));
+    if (!updateTimeRangeState(form)) {
+      verified = false;
+      const status = document.querySelector('#availability');
+      status.className = 'status no';
+      status.textContent = 'Choose an end time later than the start time.';
+      document.querySelector('#book').disabled = true;
+      updateWorkflow(form);
+      return;
+    }
     if (isPastBookingTime(values.date, values.startTime)) {
       verified = false;
       const status = document.querySelector('#availability');
@@ -714,6 +776,15 @@ function render() {
     event.preventDefault();
     if (!verified) return;
     const values = Object.fromEntries(new FormData(form));
+    if (!updateTimeRangeState(form)) {
+      verified = false;
+      const status = document.querySelector('#availability');
+      status.className = 'status no';
+      status.textContent = 'Choose an end time later than the start time.';
+      document.querySelector('#book').disabled = true;
+      updateWorkflow(form);
+      return;
+    }
     if (isPastBookingTime(values.date, values.startTime)) {
       verified = false;
       const status = document.querySelector('#availability');

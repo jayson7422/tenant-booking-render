@@ -94,6 +94,9 @@ function send(res, status, value) {
 const BOOKING_TIME_IN_PAST =
   'This time has already passed. Please select a future booking time.';
 
+const BOOKING_END_BEFORE_START =
+  'The end time must be later than the start time.';
+
 function sendBookingTimeInPast(res) {
   return send(
     res,
@@ -103,6 +106,19 @@ function sendBookingTimeInPast(res) {
       code: 'BOOKING_TIME_IN_PAST',
       error: BOOKING_TIME_IN_PAST,
       message: BOOKING_TIME_IN_PAST
+    }
+  );
+}
+
+function sendBookingTimeOrderError(res) {
+  return send(
+    res,
+    400,
+    {
+      success: false,
+      code: 'BOOKING_END_BEFORE_START',
+      error: BOOKING_END_BEFORE_START,
+      message: BOOKING_END_BEFORE_START
     }
   );
 }
@@ -213,6 +229,30 @@ function bookingHours(
   )
     ? money(hours)
     : 0;
+}
+
+function bookingEndBeforeStart(
+  startTime,
+  endTime
+) {
+  const toMinutes = value => {
+    const match =
+      /^(\d{2}):(\d{2})$/.exec(
+        value || ''
+      );
+
+    return match
+      ? Number(match[1]) * 60 +
+        Number(match[2])
+      : NaN;
+  };
+
+  const start = toMinutes(startTime);
+  const end = toMinutes(endTime);
+
+  return Number.isFinite(start) &&
+    Number.isFinite(end) &&
+    end <= start;
 }
 
 function bookedHours(
@@ -553,10 +593,16 @@ function googleConfiguration(
   data,
   room
 ) {
-  const calendarId =
+  const calendarIds = (
     room?.calendarId ||
     process.env.GOOGLE_CALENDAR_ID ||
-    'primary';
+    'primary'
+  )
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index);
+  const calendarId = calendarIds[0] || 'primary';
 
   const oauth =
     googleOAuthSettings();
@@ -576,7 +622,8 @@ function googleConfiguration(
       provider: 'oauth',
       ...oauth,
       refreshToken,
-      calendarId
+      calendarId,
+      calendarIds
     };
   }
 
@@ -613,7 +660,8 @@ function googleConfiguration(
       provider:
         'service-account',
       serviceAccount,
-      calendarId
+      calendarId,
+      calendarIds
     }
     : null;
 }
@@ -1044,12 +1092,7 @@ async function googleBusyPeriods(
                 )
               ).toISOString(),
 
-            items: [
-              {
-                id:
-                  config.calendarId
-              }
-            ]
+            items: config.calendarIds.map(calendarId => ({ id: calendarId }))
           })
       }
     );
@@ -1063,23 +1106,20 @@ async function googleBusyPeriods(
   const payload =
     await response.json();
 
-  const calendar =
-    payload.calendars
-      ?.[config.calendarId];
-
-  if (
-    !calendar ||
-    calendar.errors?.length
-  ) {
-    throw Error(
-      'Google Calendar cannot access this room calendar. Check the configured Calendar ID.'
-    );
-  }
+  const calendars = config.calendarIds.map(calendarId => {
+    const calendar = payload.calendars?.[calendarId];
+    if (!calendar || calendar.errors?.length) {
+      throw Error(
+        'Google Calendar cannot access this room calendar. Check the configured Calendar ID.'
+      );
+    }
+    return calendar;
+  });
 
   return {
     enabled: true,
     busy:
-      calendar.busy || []
+      calendars.flatMap(calendar => calendar.busy || [])
   };
 }
 
@@ -1100,6 +1140,12 @@ async function googleAvailability(
     }
 
     const token = await googleToken(config);
+    const ignoredEventIds = new Set(
+      String(ignoredEventId)
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean)
+    );
     const timeMin = new Date(
       bookingDateTime(
         booking.date,
@@ -1120,66 +1166,73 @@ async function googleAvailability(
       orderBy: 'startTime',
       maxResults: '2500'
     });
-    const response = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
-        config.calendarId
-      )}/events?${query.toString()}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      }
-    );
-
-    if (!response.ok) {
-      throw Error(
-        'Google Calendar availability check failed'
-      );
-    }
-
-    const payload = await response.json();
     const requestedStart = new Date(timeMin).getTime();
     const requestedEnd = new Date(timeMax).getTime();
-    const busy = (payload.items || []).some(event => {
-      if (
-        event.id === ignoredEventId ||
-        event.status === 'cancelled' ||
-        event.transparency === 'transparent'
-      ) {
-        return false;
+    let busy = false;
+
+    for (const calendarId of config.calendarIds) {
+      const response = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+          calendarId
+        )}/events?${query.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw Error(
+          'Google Calendar availability check failed'
+        );
       }
 
-      const startValue =
-        event.start?.dateTime ||
-        event.start?.date;
-      const endValue =
-        event.end?.dateTime ||
-        event.end?.date;
+      const payload = await response.json();
+      if ((payload.items || []).some(event => {
+        if (
+          ignoredEventIds.has(event.id) ||
+          event.status === 'cancelled' ||
+          event.transparency === 'transparent'
+        ) {
+          return false;
+        }
 
-      if (!startValue || !endValue) {
-        return false;
+        const startValue =
+          event.start?.dateTime ||
+          event.start?.date;
+        const endValue =
+          event.end?.dateTime ||
+          event.end?.date;
+
+        if (!startValue || !endValue) {
+          return false;
+        }
+
+        const eventStart = event.start?.dateTime
+          ? new Date(startValue).getTime()
+          : new Date(
+            businessDateTimeIso(
+              startValue,
+              '00:00'
+            )
+          ).getTime();
+        const eventEnd = event.end?.dateTime
+          ? new Date(endValue).getTime()
+          : new Date(
+            businessDateTimeIso(
+              endValue,
+              '00:00'
+            )
+          ).getTime();
+
+        return eventStart < requestedEnd &&
+          eventEnd > requestedStart;
+      })) {
+        busy = true;
+        break;
       }
-
-      const eventStart = event.start?.dateTime
-        ? new Date(startValue).getTime()
-        : new Date(
-          businessDateTimeIso(
-            startValue,
-            '00:00'
-          )
-        ).getTime();
-      const eventEnd = event.end?.dateTime
-        ? new Date(endValue).getTime()
-        : new Date(
-          businessDateTimeIso(
-            endValue,
-            '00:00'
-          )
-        ).getTime();
-
-      return eventStart < requestedEnd &&
-        eventEnd > requestedStart;
-    });
+    }
 
     return {
       enabled: true,
@@ -1331,74 +1384,59 @@ async function createCalendarEvent(
       config
     );
 
-  const response =
-    await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${
-        encodeURIComponent(
-          config.calendarId
-        )
-      }/events`,
-      {
-        method: 'POST',
+  const eventIds = [];
+  const requestBody = {
+    summary:
+      `${room.name} — ${tenant.companyName || tenant.fullName}`,
+    description:
+      `Tenant: ${tenant.fullName}\n` +
+      `Company: ${tenant.companyName || '—'}\n` +
+      `Email: ${tenant.email}\n` +
+      `Location: ${tenant.location}`,
+    start: {
+      dateTime: bookingDateTime(booking.date, booking.startTime),
+      timeZone: timezone
+    },
+    end: {
+      dateTime: bookingDateTime(booking.date, booking.endTime),
+      timeZone: timezone
+    }
+  };
 
-        headers: {
-          Authorization:
-            `Bearer ${token}`,
+  try {
+    for (const calendarId of config.calendarIds) {
+      const response = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody)
+        }
+      );
 
-          'Content-Type':
-            'application/json'
-        },
-
-        body:
-          JSON.stringify({
-            summary:
-              `${
-                room.name
-              } — ${
-                tenant.companyName ||
-                tenant.fullName
-              }`,
-
-            description:
-              `Tenant: ${tenant.fullName}\n` +
-              `Company: ${tenant.companyName || '—'}\n` +
-              `Email: ${tenant.email}\n` +
-              `Location: ${tenant.location}`,
-
-            start: {
-              dateTime:
-                bookingDateTime(
-                  booking.date,
-                  booking.startTime
-                ),
-
-              timeZone:
-                timezone
-            },
-
-            end: {
-              dateTime:
-                bookingDateTime(
-                  booking.date,
-                  booking.endTime
-                ),
-
-              timeZone:
-                timezone
-            }
-          })
+      if (!response.ok) {
+        throw Error('Google Calendar event could not be created');
       }
-    );
 
-  if (!response.ok) {
-    throw Error(
-      'Google Calendar event could not be created'
-    );
+      eventIds.push((await response.json()).id);
+    }
+  } catch (error) {
+    for (let index = 0; index < eventIds.length; index += 1) {
+      await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(config.calendarIds[index])}/events/${encodeURIComponent(eventIds[index])}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      ).catch(() => {});
+    }
+    throw error;
   }
 
-  return (
-    await response.json()
-  ).id;
+  return eventIds.join(',');
 }
 
 async function deleteCalendarEvent(
@@ -1424,34 +1462,25 @@ async function deleteCalendarEvent(
       config
     );
 
-  const response =
-    await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${
-        encodeURIComponent(
-          config.calendarId
-        )
-      }/events/${
-        encodeURIComponent(
-          eventId
-        )
-      }`,
+  const eventIds = String(eventId)
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+
+  for (let index = 0; index < eventIds.length; index += 1) {
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(config.calendarIds[index] || config.calendarId)}/events/${encodeURIComponent(eventIds[index])}`,
       {
         method: 'DELETE',
-
         headers: {
-          Authorization:
-            `Bearer ${token}`
+          Authorization: `Bearer ${token}`
         }
       }
     );
 
-  if (
-    !response.ok &&
-    response.status !== 404
-  ) {
-    throw Error(
-      'Google Calendar event could not be deleted'
-    );
+    if (!response.ok && response.status !== 404) {
+      throw Error('Google Calendar event could not be deleted');
+    }
   }
 }
 
@@ -2074,6 +2103,15 @@ const server =
               );
 
             if (
+              bookingEndBeforeStart(
+                booking.startTime,
+                booking.endTime
+              )
+            ) {
+              return sendBookingTimeOrderError(res);
+            }
+
+            if (
               !room ||
               !validBookingWindow(
                 booking.date,
@@ -2351,6 +2389,15 @@ const server =
                 input.startTime,
                 input.endTime
               );
+
+            if (
+              bookingEndBeforeStart(
+                input.startTime,
+                input.endTime
+              )
+            ) {
+              return sendBookingTimeOrderError(res);
+            }
 
             if (
               !room ||
@@ -3379,6 +3426,15 @@ const server =
                   item.id ===
                   roomId
               );
+
+            if (
+              bookingEndBeforeStart(
+                startTime,
+                endTime
+              )
+            ) {
+              return sendBookingTimeOrderError(res);
+            }
 
             if (
               !room ||

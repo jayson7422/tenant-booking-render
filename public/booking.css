@@ -104,6 +104,8 @@ body.picker-open{overflow:hidden}
 .suggestion-heading{display:block;margin-top:8px}
 .suggestion-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
 .suggestion-button{font-size:12px;padding:8px 10px}
+.field-error{display:block;margin-top:7px;color:var(--red);font-size:12px;font-weight:600;line-height:1.35}
+.field.has-error .picker-trigger{border-color:var(--red);box-shadow:0 0 0 3px #c94b5a18}
 
 /* ── Status ── */
 .status{margin-top:16px;padding:11px 12px;border-radius:9px;line-height:1.45}

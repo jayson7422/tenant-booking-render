@@ -235,7 +235,8 @@ function renderLegacy() {
     '<header class="top"><div class="brand">Launchpad<i> Tenant</i></div><div class="top-right"><span class="pill">Booking admin</span><button class="outline" id="out">Sign out</button></div></header>' +
     '<section class="panel-head"><div><h1>Tenant booking control</h1><p>Tenant portal: <a href="/" target="_blank" rel="noreferrer">' + esc(location.origin) + '</a></p></div>' +
     '<div class="actions"><button class="outline" id="add-room">+ Add room</button><button class="primary" id="add-tenant">+ Add tenant</button></div></section>' +
-    '<section class="stats"><div class="card metric"><small>Active tenants</small><b>' + state.tenants.filter(tenant => tenant.status === 'Active').length + '</b></div>' +
+    '<section class="stats"><div class="card metric"><small>Available rooms</small><b>' + state.rooms.length + '</b><span class="ok">Launchpad room catalog</span></div>' +
+    '<div class="card metric"><small>Active tenants</small><b>' + state.tenants.filter(tenant => tenant.status === 'Active').length + '</b></div>' +
     '<div class="card metric"><small>Confirmed bookings</small><b>' + confirmed + '</b></div><div class="card metric"><small>Needs review</small><b class="' + (reviews ? 'metric-warning' : '') + '">' + reviews + '</b></div>' +
     '<div class="card metric"><small>Hours used / allotted</small><b>' + used.toFixed(1) + ' / ' + allotted.toFixed(1) + '</b><span class="' + (state.calendarConnected ? 'ok' : 'warn') + '">' +
     (state.calendarConnected ? 'Calendar connected' : 'Local availability only') + '</span></div></section>' +
@@ -477,7 +478,7 @@ function tenantForm(tenant = {}) {
 function roomForm(room = {}) {
   form(room.id ? 'Edit room' : 'Add room', [
     { name: 'name', label: 'Room name', value: room.name, required: true }, { name: 'location', label: 'Location', value: room.location, required: true },
-    { name: 'capacity', label: 'Capacity', type: 'number', value: room.capacity || '', min: 0, step: 1 }, { name: 'calendarId', label: 'Google Calendar ID (optional)', value: room.calendarId || '' }
+    { name: 'capacity', label: 'Capacity', type: 'number', value: room.capacity || '', min: 0, step: 1 }, { name: 'calendarId', label: 'Google Calendar ID(s) (optional)', value: room.calendarId || '', help: 'For a combined room, separate calendar IDs with commas.' }
   ], values => api(room.id ? '/api/rooms/' + room.id : '/api/rooms', { method: room.id ? 'PUT' : 'POST', body: JSON.stringify(values) }));
 }
 async function sendReport(tenantId) {
