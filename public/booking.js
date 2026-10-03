@@ -193,6 +193,13 @@ function formatTime(value) {
   return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
 }
 
+function formatPhtDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('en-PH', { timeZone: BUSINESS_TIME_ZONE, dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
 function setDateValue(form, value) {
   form.elements.date.value = value;
   const display = form.querySelector('[data-date-display]');
@@ -406,6 +413,11 @@ function durationLabel(startTime, endTime) {
   return `${hours ? `${hours}h` : ''}${remainder ? ` ${remainder}m` : ''}`.trim();
 }
 
+function bookingDurationHours(startTime, endTime) {
+  const minutes = timeMinutes(endTime) - timeMinutes(startTime);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes / 60 : 0;
+}
+
 function dialogFocusables(dialog) {
   return [...dialog.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')];
 }
@@ -560,6 +572,77 @@ function closeConfirmModal() {
   document.body.classList.remove('modal-open');
 }
 
+let cancellationModalElement = null;
+let cancellationModalCleanup = null;
+
+function closeCancellationModal() {
+  if (cancellationModalCleanup) cancellationModalCleanup();
+  cancellationModalCleanup = null;
+  cancellationModalElement?.remove();
+  cancellationModalElement = null;
+  document.body.classList.remove('modal-open');
+}
+
+function openCancellationModal(booking) {
+  if (!booking || booking.status !== 'Confirmed' || cancellationModalElement) return;
+  const policy = booking.cancellation || {};
+  const request = booking.cancellationRequest;
+  if (request?.status === 'Pending') {
+    window.alert('Your cancellation request is already awaiting admin review.');
+    return;
+  }
+  const emergency = !policy.eligible;
+  const reasonOptions = ['Weather disturbance', 'Transportation disruption', 'Building / facility issue', 'Personal emergency', 'Other']
+    .map(reason => `<option value="${esc(reason)}">${esc(reason)}</option>`).join('');
+  const modal = document.createElement('div');
+  modal.className = 'confirm-modal cancellation-modal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'cancellation-title');
+  modal.innerHTML = `<section class="confirm-dialog"><div class="dialog-title-row"><div><p class="dialog-kicker">${emergency ? 'Cancellation request' : 'Manage booking'}</p><h2 id="cancellation-title">${emergency ? 'Request cancellation review' : 'Cancel this booking?'}</h2></div><button type="button" class="dialog-close" data-cancel-close aria-label="Close cancellation dialog">×</button></div><div class="cancel-dialog-content"><div class="cancel-summary"><strong>${esc(booking.room?.name || booking.roomName)}</strong><span>${esc(formatDate(booking.date))} · ${esc(formatTime(booking.startTime))} – ${esc(formatTime(booking.endTime))} · ${esc(durationLabel(booking.startTime, booking.endTime))}</span></div>${emergency ? `<div class="review-section policy-box"><h3>Standard cancellation window closed</h3><p>Normal cancellation was available until <strong>${esc(formatPhtDateTime(policy.deadlineAt))}</strong> Philippine Time.</p><p class="policy-help">If an unforeseen circumstance prevents you from using the booking, submit a request for admin review. Your allocation remains unchanged until an administrator approves it.</p></div><div class="field"><label for="cancel-reason-category">Reason</label><select id="cancel-reason-category" name="reasonCategory">${reasonOptions}</select></div><div class="field"><label for="cancel-note">Optional note</label><textarea id="cancel-note" name="note" rows="3" maxlength="1000" placeholder="Keep this brief; do not include unnecessary sensitive details."></textarea></div>` : `<div class="review-section policy-box"><h3>Cancellation policy</h3><p>You can cancel this booking until <strong>${esc(formatPhtDateTime(policy.deadlineAt))}</strong> Philippine Time.</p><p class="policy-help">${Number(booking.hours).toFixed(1)} hour(s) will be returned to your booking allocation after cancellation.</p></div><div class="field"><label for="cancel-remark">Cancellation reason</label><textarea id="cancel-remark" name="remark" rows="3" maxlength="1000" required placeholder="Briefly tell us why you are cancelling."></textarea></div>`}<div class="modal-error" data-cancel-error role="alert" hidden></div></div><div class="confirm-modal-actions"><button type="button" class="outline" data-cancel-keep>Keep booking</button><button type="button" class="primary" data-cancel-submit>${emergency ? 'Submit request' : 'Cancel booking'}</button></div></section>`;
+  document.body.append(modal);
+  cancellationModalElement = modal;
+  document.body.classList.add('modal-open');
+  const dialog = modal.querySelector('.confirm-dialog');
+  const previousFocus = document.activeElement;
+  const close = () => closeCancellationModal();
+  modal.querySelector('[data-cancel-close]').onclick = close;
+  modal.querySelector('[data-cancel-keep]').onclick = close;
+  modal.querySelector('[data-cancel-submit]').onclick = async () => {
+    const button = modal.querySelector('[data-cancel-submit]');
+    if (button.disabled) return;
+    const errorBox = modal.querySelector('[data-cancel-error]');
+    const field = name => modal.querySelector(`[name="${name}"]`);
+    const values = emergency
+      ? { reasonCategory: field('reasonCategory').value, note: field('note').value.trim() }
+      : { remark: field('remark').value.trim() };
+    if (!emergency && !values.remark) {
+      errorBox.hidden = false;
+      errorBox.textContent = 'Please provide a brief cancellation reason.';
+      return;
+    }
+    button.disabled = true;
+    button.textContent = emergency ? 'Submitting…' : 'Cancelling…';
+    try {
+      const result = await api(`/api/tenant/bookings/${booking.id}/${emergency ? 'cancellation-request' : 'cancel'}`, { method: 'POST', body: JSON.stringify(values) });
+      const message = emergency ? 'Your cancellation request was submitted for review. Your allocation has not been refunded.' : `${Number(booking.hours).toFixed(1)} hour(s) have been returned to your booking allocation.`;
+      modal.querySelector('.cancel-dialog-content').innerHTML = `<div class="success-mark" aria-hidden="true">✓</div><p class="dialog-kicker">${emergency ? 'Request submitted' : 'Booking cancelled'}</p><h2 id="cancellation-title">${emergency ? 'Your request is being reviewed' : 'Booking cancelled successfully'}</h2><p class="confirm-intro">${esc(message)}</p><div class="cancel-summary"><strong>${esc(booking.room?.name || booking.roomName)}</strong><span>${esc(formatDate(booking.date))} · ${esc(formatTime(booking.startTime))} – ${esc(formatTime(booking.endTime))}</span></div>`;
+      modal.querySelector('.confirm-modal-actions').innerHTML = '<button type="button" class="primary" data-cancel-done>Done</button>';
+      modal.querySelector('[data-cancel-done]').onclick = async () => { closeCancellationModal(); await load(); };
+      void result;
+    } catch (error) {
+      errorBox.hidden = false;
+      errorBox.textContent = friendlyBookingError(error);
+      button.disabled = false;
+      button.textContent = emergency ? 'Submit request' : 'Cancel booking';
+    }
+  };
+  modal.onclick = event => { if (event.target === modal) close(); };
+  const keyboardCleanup = installDialogKeyboard(dialog, close);
+  cancellationModalCleanup = () => { keyboardCleanup(); previousFocus?.focus?.(); };
+  window.setTimeout(() => modal.querySelector('[data-cancel-submit]').focus(), 0);
+}
+
 function showConfirmError(modal, form, message) {
   confirmSubmitting = false;
   verified = false;
@@ -586,10 +669,11 @@ function showConfirmError(modal, form, message) {
   updateWorkflow(form);
 }
 
-function renderBookingSuccess(modal, form, values) {
+function renderBookingSuccess(modal, form, values, result) {
   confirmSubmitting = false;
+  if (result?.remainingHours != null) data.tenant.remainingHours = Number(result.remainingHours);
   const roomName = data.rooms.find(room => room.id === form.elements.roomId.value)?.name || form.elements.roomId.selectedOptions[0]?.textContent || 'Selected workspace';
-  modal.querySelector('.confirm-dialog-content').innerHTML = `<div class="success-mark" aria-hidden="true">✓</div><p class="dialog-kicker">Booking confirmed</p><h2 id="confirm-booking-title">Your reservation is ready</h2><p class="confirm-intro">Your workspace booking was successfully created.</p><div class="summary-grid"><div><small>Workspace</small><strong>${esc(roomName)}</strong></div><div><small>Date</small><strong>${esc(formatDate(values.date))}</strong></div><div><small>Time</small><strong>${esc(formatTime(values.startTime))} – ${esc(formatTime(values.endTime))}</strong></div><div><small>Duration</small><strong>${esc(durationLabel(values.startTime, values.endTime))}</strong></div></div>`;
+  modal.querySelector('.confirm-dialog-content').innerHTML = `<div class="success-mark" aria-hidden="true">✓</div><p class="dialog-kicker">Booking confirmed</p><h2 id="confirm-booking-title">Your reservation is ready</h2><p class="confirm-intro">Your workspace booking was successfully created and the interval is now reserved.</p><div class="summary-grid"><div><small>Workspace</small><strong>${esc(roomName)}</strong></div><div><small>Date</small><strong>${esc(formatDate(values.date))}</strong></div><div><small>Time</small><strong>${esc(formatTime(values.startTime))} – ${esc(formatTime(values.endTime))}</strong></div><div><small>Duration</small><strong>${esc(durationLabel(values.startTime, values.endTime))}</strong></div></div><div class="quota-impact success"><span><small>Allocation update</small><strong>${esc(durationLabel(values.startTime, values.endTime))} deducted</strong></span><span><small>Remaining allocation</small><strong>${Number(result?.remainingHours ?? data.tenant.remainingHours).toFixed(1)} h</strong></span></div>`;
   modal.querySelector('.confirm-modal-actions').innerHTML = '<button type="button" class="outline" data-success-done>Done</button><button type="button" class="primary" data-success-history>View my bookings</button>';
   const refresh = async scrollToHistory => {
     closeConfirmModal();
@@ -611,6 +695,12 @@ async function submitBookingFromModal(form, values, modal) {
     showConfirmError(modal, form, 'This booking time has already passed. Please select another available time.');
     return;
   }
+  if (!modal.querySelector('[data-confirm-ack]')?.checked) {
+    const errorBox = modal.querySelector('[data-confirm-error]');
+    errorBox.hidden = false;
+    errorBox.textContent = 'Please acknowledge the booking allocation before confirming.';
+    return;
+  }
   confirmSubmitting = true;
   const confirmButton = modal.querySelector('[data-confirm-submit]');
   const cancelButton = modal.querySelector('[data-confirm-cancel]');
@@ -618,8 +708,8 @@ async function submitBookingFromModal(form, values, modal) {
   confirmButton.textContent = 'Confirming…';
   cancelButton.disabled = true;
   try {
-    await api('/api/tenant/bookings', { method: 'POST', body: JSON.stringify(latest) });
-    renderBookingSuccess(modal, form, latest);
+    const result = await api('/api/tenant/bookings', { method: 'POST', body: JSON.stringify(latest) });
+    renderBookingSuccess(modal, form, latest, result);
   } catch (error) {
     showConfirmError(modal, form, friendlyBookingError(error));
   }
@@ -634,7 +724,11 @@ function openConfirmModal(form) {
   modal.setAttribute('role', 'dialog');
   modal.setAttribute('aria-modal', 'true');
   modal.setAttribute('aria-labelledby', 'confirm-booking-title');
-  modal.innerHTML = `<section class="confirm-dialog"><div class="dialog-title-row"><div><p class="dialog-kicker">Review reservation</p><h2 id="confirm-booking-title">Confirm your booking</h2></div><button type="button" class="dialog-close" data-confirm-close aria-label="Close confirmation dialog">×</button></div><div class="confirm-dialog-content"><p class="confirm-intro">Please review the details before confirming.</p><div class="summary-grid"><div><small>Workspace</small><strong>${esc(roomName)}</strong></div><div><small>Date</small><strong>${esc(formatDate(values.date))}</strong></div><div><small>Time</small><strong>${esc(formatTime(values.startTime))} – ${esc(formatTime(values.endTime))}</strong></div><div><small>Duration</small><strong>${esc(durationLabel(values.startTime, values.endTime))}</strong></div></div><div class="confirm-note">Your allotted hours will be deducted only after the booking is successfully confirmed.</div><div class="modal-error" data-confirm-error role="alert" hidden></div></div><div class="confirm-modal-actions"><button type="button" class="outline" data-confirm-cancel>Keep editing</button><button type="button" class="primary" data-confirm-submit>Confirm Booking</button></div></section>`;
+  const duration = bookingDurationHours(values.startTime, values.endTime);
+  const availableBefore = Number(data.tenant.remainingHours || 0);
+  const remainingAfter = Math.max(0, availableBefore - duration);
+  const cancellationPolicy = data.cancellationPolicy?.standard || 'You can cancel a booking up to 72 hours before its scheduled start time.';
+  modal.innerHTML = `<section class="confirm-dialog"><div class="dialog-title-row"><div><p class="dialog-kicker">Final booking review</p><h2 id="confirm-booking-title">Confirm your booking</h2></div><button type="button" class="dialog-close" data-confirm-close aria-label="Close confirmation dialog">×</button></div><div class="confirm-dialog-content"><p class="confirm-intro">Review the reservation, quota impact, and cancellation terms before committing.</p><section class="review-section"><h3>Booking summary</h3><div class="summary-grid"><div><small>Workspace</small><strong>${esc(roomName)}</strong></div><div><small>Date</small><strong>${esc(formatDate(values.date))}</strong></div><div><small>Time</small><strong>${esc(formatTime(values.startTime))} – ${esc(formatTime(values.endTime))}</strong></div><div><small>Duration</small><strong>${esc(durationLabel(values.startTime, values.endTime))}</strong></div></div></section><section class="review-section"><h3>Booking allocation</h3><div class="quota-impact"><span><small>Available before booking</small><strong>${availableBefore.toFixed(1)} h</strong></span><span><small>This booking</small><strong>− ${duration.toFixed(1)} h</strong></span><span><small>Remaining after confirmation</small><strong>${remainingAfter.toFixed(1)} h</strong></span></div></section><section class="review-section policy-box"><h3>Cancellation policy</h3><p>${esc(cancellationPolicy)} All times use Philippine Time.</p><p class="policy-help">If an unforeseen circumstance occurs after the normal window closes, you may submit a request for admin review. Allocation is not refunded until approved.</p></section><label class="confirm-ack"><input type="checkbox" data-confirm-ack><span>I understand that confirming will reserve this workspace and deduct ${duration.toFixed(1)} hour(s) from my available allocation.</span></label><div class="modal-error" data-confirm-error role="alert" hidden></div></div><div class="confirm-modal-actions"><button type="button" class="outline" data-confirm-cancel>Keep editing</button><button type="button" class="primary" data-confirm-submit disabled>Confirm Booking</button></div></section>`;
   document.body.append(modal);
   confirmModalElement = modal;
   document.body.classList.add('modal-open');
@@ -644,6 +738,7 @@ function openConfirmModal(form) {
   modal.querySelector('[data-confirm-close]').onclick = close;
   modal.querySelector('[data-confirm-cancel]').onclick = close;
   modal.querySelector('[data-confirm-submit]').onclick = () => submitBookingFromModal(form, values, modal);
+  modal.querySelector('[data-confirm-ack]').onchange = event => { modal.querySelector('[data-confirm-submit]').disabled = !event.target.checked; };
   modal.onclick = event => { if (event.target === modal && !confirmSubmitting) close(); };
   const keyboardCleanup = installDialogKeyboard(dialog, close);
   confirmModalCleanup = () => {
@@ -651,6 +746,34 @@ function openConfirmModal(form) {
     previousFocus?.focus?.();
   };
   window.setTimeout(() => modal.querySelector('[data-confirm-submit]').focus(), 0);
+}
+
+function renderHistoryRows() {
+  if (!data.bookings.length) return '<tr><td colspan="6" class="empty">No bookings yet.</td></tr>';
+  return data.bookings.map(booking => {
+    const request = booking.cancellationRequest;
+    const policy = booking.cancellation || {};
+    let action = '';
+    if (booking.status === 'Confirmed' && request?.status === 'Pending') {
+      action = '<span class="status-note">Cancellation review pending</span>';
+    } else if (booking.status === 'Confirmed' && policy.eligible) {
+      action = '<button type="button" class="outline cancel-booking" data-id="' + esc(booking.id) + '">Manage cancellation</button>';
+    } else if (booking.status === 'Confirmed' && !policy.started && request?.status !== 'Rejected') {
+      action = '<button type="button" class="outline cancel-booking" data-id="' + esc(booking.id) + '">Request cancellation</button>';
+    } else if (booking.status === 'Confirmed' && request?.status === 'Rejected') {
+      action = '<span class="status-note">Request rejected</span>';
+    }
+    const policyText = booking.status === 'Confirmed'
+      ? request?.status === 'Pending'
+        ? '<br><small>Allocation unchanged until admin review.</small>'
+        : policy.eligible
+          ? '<br><small>Cancel until ' + esc(formatPhtDateTime(policy.deadlineAt)) + ' PHT.</small>'
+          : policy.windowClosed && !policy.started
+            ? '<br><small>Standard cancellation window closed.</small>'
+            : ''
+      : '';
+    return '<tr><td>' + esc(booking.date) + '</td><td>' + esc(booking.startTime) + '–' + esc(booking.endTime) + '</td><td>' + esc(booking.room?.name || booking.roomName) + '</td><td>' + Number(booking.hours).toFixed(1) + '</td><td><span class="badge ' + (booking.status === 'Cancelled' ? 'badge-cancelled' : 'badge-confirmed') + '">' + esc(booking.status) + '</span>' + (booking.cancellationRemark ? '<br><small>' + esc(booking.cancellationRemark) + '</small>' : '') + policyText + '</td><td>' + action + '</td></tr>';
+  }).join('');
 }
 
 function render() {
@@ -683,9 +806,11 @@ function render() {
   availabilityStatus?.setAttribute('role', 'status');
   availabilityStatus?.setAttribute('aria-live', 'polite');
   const guide = root.querySelector('.how');
-  guide?.insertAdjacentHTML('beforeend', '<button type="button" class="help-button guide-help" id="guide-help">Open booking guide</button>');
+  guide?.insertAdjacentHTML('beforeend', '<p class="policy-inline"><strong>Cancellation policy:</strong> standard cancellation is available up to 72 hours before the booking starts. Late requests require admin review.</p><button type="button" class="help-button guide-help" id="guide-help">Open booking guide</button>');
   const historyCard = root.querySelector('.history-card');
   historyCard?.setAttribute('data-walkthrough', 'history');
+  const historyBody = historyCard?.querySelector('tbody');
+  if (historyBody) historyBody.innerHTML = renderHistoryRows();
   if (!data.bookings.length) {
     const emptyCell = historyCard?.querySelector('.empty');
     if (emptyCell) {
@@ -706,19 +831,14 @@ function render() {
     event.preventDefault();
     closeWalkthrough(false);
     closeConfirmModal();
+    closeCancellationModal();
     localStorage.removeItem('tenantBookingToken');
     token = '';
     login();
   };
-  document.querySelectorAll('.cancel-booking').forEach(button => button.onclick = async () => {
-    const remark = window.prompt('Why are you cancelling this booking? This remark will be saved with the booking.');
-    if (remark === null) return;
-    if (!remark.trim()) return alert('A cancellation remark is required.');
-    if (!window.confirm('Cancel this booking and restore its hours to your allotment?')) return;
-    try {
-      await api(`/api/tenant/bookings/${button.dataset.id}/cancel`, { method: 'POST', body: JSON.stringify({ remark }) });
-      await load();
-    } catch (error) { alert(friendlyBookingError(error)); }
+  document.querySelectorAll('.cancel-booking').forEach(button => button.onclick = () => {
+    const booking = data.bookings.find(item => item.id === button.dataset.id);
+    openCancellationModal(booking);
   });
   let checking = false;
   document.querySelector('#check').onclick = async () => {
@@ -757,7 +877,7 @@ function render() {
       const result = await api(`/api/tenant/availability?${query}`);
       verified = result.available;
       status.className = `status ${result.available ? 'ok' : 'no'}`;
-      status.textContent = result.available ? `Available for ${Number(result.hours).toFixed(1)} hour(s). Review the details before confirming.` : (result.reason || 'This time is not available.');
+      status.textContent = result.available ? `Available for ${Number(result.hours).toFixed(1)} hour(s). ${Number(result.remainingAfterBooking ?? data.tenant.remainingHours).toFixed(1)} hour(s) will remain after confirmation.` : (result.reason || 'This time is not available.');
       if (!result.available) showSuggestedTimes(result.suggestions || [], form);
       bookButton.disabled = !result.available;
       updateWorkflow(form);

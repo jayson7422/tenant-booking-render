@@ -58,7 +58,7 @@ async function inTransaction(callback) {
 }
 
 async function getSnapshot() {
-  const [companies, users, tenants, rooms, bookings, settings, oauth] = await Promise.all([
+  const [companies, users, tenants, rooms, bookings, settings, oauth, cancellationRequests] = await Promise.all([
     pool.query(`SELECT id, name FROM companies WHERE id=?`, [COMPANY_ID]),
     pool.query(`SELECT u.id, u.username, u.password_hash AS passwordHash, u.employee_id AS employeeId,
       u.role FROM users u JOIN employees e ON e.id=u.employee_id WHERE e.company_id=? ORDER BY u.created_at,u.id`, [COMPANY_ID]),
@@ -79,7 +79,12 @@ async function getSnapshot() {
       ORDER BY b.created_at,b.id`, [COMPANY_ID]),
     pool.query('SELECT timezone FROM booking_settings WHERE company_id=?', [COMPANY_ID]),
     pool.query(`SELECT refresh_token_encrypted AS refreshTokenEncrypted,
-      connected_at AS connectedAt FROM google_oauth_credentials WHERE company_id=?`, [COMPANY_ID])
+      connected_at AS connectedAt FROM google_oauth_credentials WHERE company_id=?`, [COMPANY_ID]),
+    pool.query(`SELECT id, booking_id AS bookingId, tenant_id AS tenantId,
+      reason_category AS reasonCategory, note, status, requested_at AS requestedAt,
+      reviewed_at AS reviewedAt, reviewed_by_user_id AS reviewedByUserId,
+      reviewed_by_username AS reviewedByUsername, review_remark AS reviewRemark
+      FROM booking_cancellation_requests ORDER BY requested_at DESC,id DESC`)
   ]);
 
   if (!companies[0].length) throw appError('Database is not initialized. Import the verified migration before starting the application.', 503);
@@ -104,7 +109,12 @@ async function getSnapshot() {
     googleOAuth: oauth[0][0] ? {
       refreshTokenEncrypted: oauth[0][0].refreshTokenEncrypted,
       connectedAt: dateTime(oauth[0][0].connectedAt)
-    } : null
+    } : null,
+    cancellationRequests: cancellationRequests[0].map(item => ({
+      ...item,
+      requestedAt: dateTime(item.requestedAt),
+      reviewedAt: dateTime(item.reviewedAt)
+    }))
   };
 }
 
@@ -159,6 +169,18 @@ function bookingValues(booking) {
     booking.cancellationRemark || null, sqlDateTime(booking.cancelledAt), sqlDateTime(booking.createdAt)];
 }
 
+function bookingAuditValues(booking) {
+  return {
+    roomId: booking.roomId,
+    roomName: booking.roomName,
+    date: booking.date,
+    startTime: booking.startTime,
+    endTime: booking.endTime,
+    hours: Number(booking.hours),
+    status: booking.status
+  };
+}
+
 async function insertBookingAudit(connection, entry) {
   await connection.execute(
     `INSERT INTO booking_audit_log
@@ -173,6 +195,16 @@ async function insertBookingAudit(connection, entry) {
       entry.previousValues ? JSON.stringify(entry.previousValues) : null,
       entry.newValues ? JSON.stringify(entry.newValues) : null
     ]
+  );
+}
+
+async function insertBookingLifecycle(connection, entry) {
+  await connection.execute(
+    `INSERT INTO booking_lifecycle_log
+      (booking_id,actor_type,actor_id,actor_name,action,reason,quota_minutes)
+      VALUES (?,?,?,?,?,?,?)`,
+    [entry.bookingId, entry.actorType, entry.actorId || null, entry.actorName,
+      entry.action, entry.reason || null, entry.quotaMinutes == null ? null : entry.quotaMinutes]
   );
 }
 
@@ -226,6 +258,14 @@ const bookings = {
          booking_date,start_time,end_time,duration_minutes,status,calendar_event_id,
          cancellation_remark,cancelled_at,created_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, bookingValues(booking));
+      await insertBookingLifecycle(connection, {
+        bookingId: booking.id,
+        actorType: 'tenant',
+        actorId: booking.tenantId,
+        actorName: booking.tenantName,
+        action: 'BOOKING_CONFIRMED',
+        quotaMinutes: -durationMinutes
+      });
       return { remainingHours: Math.round(((remainingMinutes - durationMinutes) / 60) * 100) / 100 };
     });
   },
@@ -295,30 +335,215 @@ const bookings = {
       await insertBookingAudit(connection, audit);
     });
   },
+  async remove(id) {
+    await pool.execute('DELETE FROM bookings WHERE id=?', [id]);
+  },
   async setCalendarEvent(id, calendarEventId) {
     await pool.execute('UPDATE bookings SET calendar_event_id=? WHERE id=?', [calendarEventId || null, id]);
   },
   async cancel(id, tenantId, remark, cancelledAt) {
-    const [result] = await pool.execute(`UPDATE bookings SET status='Cancelled',cancellation_remark=?,
-      cancelled_at=?,calendar_event_id=NULL WHERE id=? AND tenant_id=? AND status='Confirmed'`,
-    [remark, sqlDateTime(cancelledAt), id, tenantId]);
-    if (!result.affectedRows) throw appError('Booking is no longer confirmed.', 409);
+    return inTransaction(async connection => {
+      const [rows] = await connection.execute(
+        `SELECT id,status,duration_minutes AS durationMinutes,tenant_name_snapshot AS tenantName
+         FROM bookings WHERE id=? AND tenant_id=? FOR UPDATE`, [id, tenantId]
+      );
+      if (!rows.length) throw appError('Booking not found.', 404);
+      if (rows[0].status !== 'Confirmed') throw appError('Booking is no longer confirmed.', 409);
+      await connection.execute(`UPDATE bookings SET status='Cancelled',cancellation_remark=?,
+        cancelled_at=?,calendar_event_id=NULL WHERE id=? AND tenant_id=? AND status='Confirmed'`,
+      [remark, sqlDateTime(cancelledAt), id, tenantId]);
+      await insertBookingLifecycle(connection, {
+        bookingId: id,
+        actorType: 'tenant',
+        actorId: tenantId,
+        actorName: rows[0].tenantName,
+        action: 'BOOKING_CANCELLED_BY_TENANT',
+        reason: remark,
+        quotaMinutes: Number(rows[0].durationMinutes)
+      });
+    });
+  }
+};
+
+function normalizeCancellationRequest(item) {
+  if (!item) return null;
+  return {
+    ...item,
+    requestedAt: dateTime(item.requestedAt),
+    reviewedAt: dateTime(item.reviewedAt)
+  };
+}
+
+const cancellationRequests = {
+  async create(request) {
+    return inTransaction(async connection => {
+      const [bookingRows] = await connection.execute(
+        `SELECT id,status,tenant_id AS tenantId FROM bookings
+         WHERE id=? AND tenant_id=? FOR UPDATE`, [request.bookingId, request.tenantId]
+      );
+      if (!bookingRows.length) throw appError('Booking not found.', 404);
+      if (bookingRows[0].status !== 'Confirmed') throw appError('Only confirmed bookings can be reviewed for cancellation.', 409);
+
+      const [existingRows] = await connection.execute(
+        `SELECT id,booking_id AS bookingId,tenant_id AS tenantId,
+          reason_category AS reasonCategory,note,status,requested_at AS requestedAt,
+          reviewed_at AS reviewedAt,reviewed_by_user_id AS reviewedByUserId,
+          reviewed_by_username AS reviewedByUsername,review_remark AS reviewRemark
+         FROM booking_cancellation_requests WHERE booking_id=? FOR UPDATE`, [request.bookingId]
+      );
+      if (existingRows.length) return { request: normalizeCancellationRequest(existingRows[0]), alreadyExists: true };
+
+      await connection.execute(
+        `INSERT INTO booking_cancellation_requests
+          (id,booking_id,tenant_id,reason_category,note,status,requested_at)
+         VALUES (?,?,?,?,?,?,?)`,
+        [request.id, request.bookingId, request.tenantId, request.reasonCategory,
+          request.note || null, 'Pending', sqlDateTime(request.requestedAt)]
+      );
+      await insertBookingLifecycle(connection, {
+        bookingId: request.bookingId,
+        actorType: 'tenant',
+        actorId: request.tenantId,
+        actorName: request.tenantName || request.tenantId,
+        action: 'CANCELLATION_REQUESTED',
+        reason: request.reasonCategory,
+        quotaMinutes: null
+      });
+      return {
+        request: normalizeCancellationRequest({
+          id: request.id,
+          bookingId: request.bookingId,
+          tenantId: request.tenantId,
+          reasonCategory: request.reasonCategory,
+          note: request.note || null,
+          status: 'Pending',
+          requestedAt: request.requestedAt,
+          reviewedAt: null,
+          reviewedByUserId: null,
+          reviewedByUsername: null,
+          reviewRemark: null
+        }),
+        alreadyExists: false
+      };
+    });
+  },
+
+  async review(id, decision, actor, reviewRemark, cancelledAt) {
+    return inTransaction(async connection => {
+      const [requestRows] = await connection.execute(
+        `SELECT id,booking_id AS bookingId,tenant_id AS tenantId,
+          reason_category AS reasonCategory,note,status,requested_at AS requestedAt,
+          reviewed_at AS reviewedAt,reviewed_by_user_id AS reviewedByUserId,
+          reviewed_by_username AS reviewedByUsername,review_remark AS reviewRemark
+         FROM booking_cancellation_requests WHERE id=? FOR UPDATE`, [id]
+      );
+      if (!requestRows.length) throw appError('Cancellation request not found.', 404);
+      const currentRequest = normalizeCancellationRequest(requestRows[0]);
+      if (currentRequest.status !== 'Pending') return { request: currentRequest, alreadyProcessed: true };
+
+      const [bookingRows] = await connection.execute(
+        `SELECT id,tenant_id AS tenantId,room_id AS roomId,tenant_name_snapshot AS tenantName,
+          tenant_company_name_snapshot AS companyName,room_name_snapshot AS roomName,
+          booking_date AS date,start_time AS startTime,end_time AS endTime,
+          CAST(duration_minutes AS DOUBLE)/60 AS hours,status,calendar_event_id AS calendarEventId,
+          cancellation_remark AS cancellationRemark,cancelled_at AS cancelledAt,created_at AS createdAt
+         FROM bookings WHERE id=? FOR UPDATE`, [currentRequest.bookingId]
+      );
+      if (!bookingRows.length) throw appError('Booking not found.', 404);
+      const currentBooking = {
+        ...bookingRows[0],
+        date: date(bookingRows[0].date),
+        startTime: time(bookingRows[0].startTime),
+        endTime: time(bookingRows[0].endTime),
+        hours: Math.round(numeric(bookingRows[0].hours) * 100) / 100,
+        calendarEventId: bookingRows[0].calendarEventId || null,
+        cancellationRemark: bookingRows[0].cancellationRemark || null,
+        cancelledAt: dateTime(bookingRows[0].cancelledAt),
+        createdAt: dateTime(bookingRows[0].createdAt)
+      };
+
+      const nextStatus = decision === 'approve' ? 'Approved' : 'Rejected';
+      if (decision === 'approve') {
+        if (currentBooking.status !== 'Confirmed') throw appError('This booking is no longer active.', 409);
+        await connection.execute(
+          `UPDATE bookings SET status='Cancelled',cancellation_remark=?,cancelled_at=?,calendar_event_id=NULL WHERE id=? AND status='Confirmed'`,
+          [`Emergency cancellation approved: ${currentRequest.reasonCategory}`, sqlDateTime(cancelledAt), currentRequest.bookingId]
+        );
+      }
+      await connection.execute(
+        `UPDATE booking_cancellation_requests SET status=?,reviewed_at=?,reviewed_by_user_id=?,
+          reviewed_by_username=?,review_remark=? WHERE id=? AND status='Pending'`,
+        [nextStatus, sqlDateTime(cancelledAt), actor.id, actor.username, reviewRemark || null, id]
+      );
+      await insertBookingAudit(connection, {
+        bookingId: currentRequest.bookingId,
+        adminUserId: actor.id,
+        adminUsername: actor.username,
+        action: decision === 'approve' ? 'CANCELLATION_APPROVED_BY_ADMIN' : 'CANCELLATION_REJECTED_BY_ADMIN',
+        reason: reviewRemark || currentRequest.reasonCategory,
+        previousValues: bookingAuditValues(currentBooking),
+        newValues: bookingAuditValues(decision === 'approve' ? { ...currentBooking, status: 'Cancelled', calendarEventId: null } : currentBooking)
+      });
+      await insertBookingLifecycle(connection, {
+        bookingId: currentRequest.bookingId,
+        actorType: 'admin',
+        actorId: actor.id,
+        actorName: actor.username,
+        action: decision === 'approve' ? 'CANCELLATION_APPROVED_BY_ADMIN' : 'CANCELLATION_REJECTED_BY_ADMIN',
+        reason: reviewRemark || currentRequest.reasonCategory,
+        quotaMinutes: decision === 'approve' ? Number(currentBooking.hours) * 60 : null
+      });
+      return {
+        request: normalizeCancellationRequest({
+          ...currentRequest,
+          status: nextStatus,
+          reviewedAt: cancelledAt,
+          reviewedByUserId: actor.id,
+          reviewedByUsername: actor.username,
+          reviewRemark: reviewRemark || null
+        }),
+        booking: decision === 'approve' ? { ...currentBooking, status: 'Cancelled', calendarEventId: null } : currentBooking,
+        calendarEventIdToDelete: decision === 'approve' ? currentBooking.calendarEventId : null,
+        alreadyProcessed: false
+      };
+    });
   }
 };
 
 const audit = {
   async listForBooking(bookingId) {
-    const [rows] = await pool.execute(
+    const [auditRows, lifecycleRows] = await Promise.all([
+      pool.execute(
       `SELECT id,booking_id AS bookingId,admin_user_id AS adminUserId,
         admin_username AS adminUsername,action,reason,previous_values AS previousValues,
         new_values AS newValues,created_at AS createdAt
        FROM booking_audit_log WHERE booking_id=? ORDER BY created_at DESC,id DESC`,
       [bookingId]
-    );
+      ),
+      pool.execute(
+        `SELECT id,booking_id AS bookingId,actor_type AS actorType,actor_id AS actorId,
+          actor_name AS actorName,action,reason,quota_minutes AS quotaMinutes,created_at AS createdAt
+         FROM booking_lifecycle_log WHERE booking_id=? ORDER BY created_at DESC,id DESC`, [bookingId]
+      )
+    ]);
+    const rows = [
+      ...auditRows[0],
+      ...lifecycleRows[0].map(item => ({
+        id: 'lifecycle-' + item.id,
+        bookingId: item.bookingId,
+        adminUserId: item.actorId,
+        adminUsername: item.actorName,
+        action: item.action,
+        reason: item.reason,
+        previousValues: null,
+        newValues: item.quotaMinutes == null ? null : { quotaMinutes: Number(item.quotaMinutes) },
+        createdAt: item.createdAt
+      }))
+    ].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
     return rows.map(item => ({
       ...item,
-      previousValues: item.previousValues ? JSON.parse(item.previousValues) : null,
-      newValues: item.newValues ? JSON.parse(item.newValues) : null,
+      previousValues: typeof item.previousValues === 'string' ? JSON.parse(item.previousValues) : item.previousValues || null,
+      newValues: typeof item.newValues === 'string' ? JSON.parse(item.newValues) : item.newValues || null,
       createdAt: dateTime(item.createdAt)
     }));
   }
@@ -426,6 +651,7 @@ module.exports = {
   tenants,
   rooms,
   bookings,
+  cancellationRequests,
   audit,
   sessions,
   integrations

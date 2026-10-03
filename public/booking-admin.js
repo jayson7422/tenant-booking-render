@@ -451,12 +451,14 @@ function renderBookingList() {
     '<td><span class="status-badge ' + bookingStatusClass(booking.bookingState) + '">' + esc(booking.bookingState) + '</span></td><td>' +
     (booking.needsReview ? '<span class="review-badge warning" title="' + esc(booking.reviewReason) + '">Needs review</span>' : '<span class="review-badge">Looks good</span>') + '</td><td class="row-actions">' +
     '<button class="outline booking-details" data-id="' + esc(booking.id) + '">Details</button>' +
+    (booking.cancellationRequest?.status === 'Pending' ? '<button class="outline booking-review-cancellation" data-id="' + esc(booking.id) + '">Review request</button>' : '') +
     (booking.status === 'Confirmed' ? '<button class="outline booking-edit" data-id="' + esc(booking.id) + '">Edit</button><button class="danger booking-cancel" data-id="' + esc(booking.id) + '">Cancel</button>' : '') +
     '</td></tr>').join('') : '<tr><td class="sub" colspan="8">No bookings match these filters.</td></tr>';
   list.innerHTML = '<div class="table-wrap"><table class="table booking-table"><thead><tr><th>Tenant</th><th>Workspace</th><th>Date</th><th>Time</th><th>Duration</th><th>Status</th><th>Review</th><th>Actions</th></tr></thead><tbody>' +
     rows + '</tbody></table></div><div class="pagination"><button class="outline" id="booking-prev"' + (bookingPage <= 1 ? ' disabled' : '') + '>Previous</button><span>Page ' + bookingPage + ' of ' + pageCount + '</span><button class="outline" id="booking-next"' +
     (bookingPage >= pageCount ? ' disabled' : '') + '>Next</button></div>';
   document.querySelectorAll('.booking-details').forEach(button => { button.onclick = () => bookingDetails(button.dataset.id); });
+  document.querySelectorAll('.booking-review-cancellation').forEach(button => { button.onclick = () => bookingDetails(button.dataset.id); });
   document.querySelectorAll('.booking-edit').forEach(button => { button.onclick = () => editBooking(state.bookings.find(booking => booking.id === button.dataset.id)); });
   document.querySelectorAll('.booking-cancel').forEach(button => { button.onclick = () => cancelBooking(state.bookings.find(booking => booking.id === button.dataset.id)); });
   $('#booking-prev').onclick = () => { if (bookingPage > 1) { bookingPage--; renderBookingList(); } };
@@ -537,33 +539,76 @@ function auditValues(values) {
   if (!values) return '<span class="sub">No recorded values</span>';
   const labels = [['Workspace', values.roomName || values.roomId], ['Date', values.date],
     ['Time', values.startTime && values.endTime ? values.startTime + '–' + values.endTime : '—'],
-    ['Duration', values.hours != null ? formatHours(values.hours) : '—'], ['Status', values.status]];
+    ['Duration', values.hours != null ? formatHours(values.hours) : '—'], ['Status', values.status],
+    ['Quota change', values.quotaMinutes != null ? formatHours(Number(values.quotaMinutes) / 60) : null]];
   return '<div class="audit-values">' + labels.filter(item => item[1] != null).map(item => '<span><b>' + esc(item[0]) + '</b> ' + esc(item[1]) + '</span>').join('') + '</div>';
+}
+
+function auditEntryMarkup(entry) {
+  const lifecycle = String(entry.id || '').startsWith('lifecycle-');
+  const quotaMinutes = entry.newValues?.quotaMinutes;
+  const timestamp = esc(formatPhtDateTime(entry.createdAt));
+  const reason = entry.reason ? ' · ' + esc(entry.reason) : '';
+  if (lifecycle && quotaMinutes != null) {
+    const amount = formatHours(Math.abs(Number(quotaMinutes)) / 60);
+    const direction = Number(quotaMinutes) >= 0 ? 'restored' : 'deducted';
+    return '<article class="audit-entry audit-entry-lifecycle"><div class="audit-entry-head"><strong>ALLOCATION UPDATED</strong><span>' + timestamp + '</span></div><div class="audit-meta">System lifecycle' + reason + '</div><div class="audit-impact"><span>Quota ' + direction + '</span><strong>' + esc(amount) + '</strong></div></article>';
+  }
+  if (lifecycle) {
+    return '<article class="audit-entry audit-entry-lifecycle"><div class="audit-entry-head"><strong>REQUEST LOGGED</strong><span>' + timestamp + '</span></div><div class="audit-meta">System lifecycle' + reason + '</div></article>';
+  }
+  return '<article class="audit-entry"><div class="audit-entry-head"><strong>' + esc(String(entry.action || '').replaceAll('_', ' ')) + '</strong><span>' + timestamp + '</span></div><div class="audit-meta">By ' + esc(entry.adminUsername || entry.adminUserId || 'administrator') + reason + '</div><div class="audit-change"><div><small>Before</small>' + auditValues(entry.previousValues) + '</div><div><small>After</small>' + auditValues(entry.newValues) + '</div></div></article>';
 }
 
 async function bookingDetails(id) {
   modalMarkup('<div class="modal-loading">Loading booking details...</div>');
   try {
     const result = await api('/api/bookings/' + id); const booking = result.booking; const audit = result.audit || [];
-    const auditHtml = audit.length ? audit.map(entry => '<article class="audit-entry"><div class="audit-entry-head"><strong>' +
+    const legacyAuditHtml = audit.length ? audit.map(entry => '<article class="audit-entry"><div class="audit-entry-head"><strong>' +
       esc(entry.action.replaceAll('_', ' ')) + '</strong><span>' + esc(formatPhtDateTime(entry.createdAt)) + '</span></div><div class="audit-meta">By ' +
       esc(entry.adminUsername || entry.adminUserId || 'administrator') + (entry.reason ? ' · ' + esc(entry.reason) : '') + '</div><div class="audit-change"><div><small>Before</small>' +
       auditValues(entry.previousValues) + '</div><div><small>After</small>' + auditValues(entry.newValues) + '</div></div></article>').join('') :
       '<p class="sub">No admin changes have been recorded for this booking.</p>';
+    const auditHtml = audit.length ? audit.map(auditEntryMarkup).join('') :
+      '<p class="sub">No admin changes have been recorded for this booking.</p>';
     const details = detailRows(booking).map(row => '<div><small>' + esc(row[0]) + '</small><strong>' + esc(row[1] ?? '—') + '</strong></div>').join('');
+    const cancellationRequest = booking.cancellationRequest;
+    const cancellationRequestHtml = cancellationRequest ? '<section class="audit-section cancellation-review"><h3>Cancellation request</h3><div class="review-callout ' + (cancellationRequest.status === 'Pending' ? 'warning' : '') + '"><b>' + esc(cancellationRequest.status) + '</b><br>' + esc(cancellationRequest.reasonCategory) + (cancellationRequest.note ? '<br>' + esc(cancellationRequest.note) : '') + '<br><small>Submitted ' + esc(formatPhtDateTime(cancellationRequest.requestedAt)) + '</small></div>' + (cancellationRequest.status === 'Pending' ? '<div class="modal-actions"><button type="button" class="outline" id="review-reject">Reject request</button><button type="button" class="primary" id="review-approve">Approve cancellation &amp; refund</button></div>' : '') + '</section>' : '';
     modalMarkup('<div class="modal-title-row"><div><div class="eyebrow">Booking details</div><h2>' + esc(bookingTenant(booking)) + '</h2></div><span class="status-badge ' +
       bookingStatusClass(booking.bookingState) + '">' + esc(booking.bookingState) + '</span></div>' +
       (booking.needsReview ? '<div class="review-callout warning"><b>Needs review</b><br>' + esc(booking.reviewReason) + '</div>' :
         '<div class="review-callout"><b>Data checks passed.</b> No current relationship or overlap issue was detected.</div>') +
-      '<div class="detail-grid">' + details + '</div><section class="audit-section"><h3>Admin audit history</h3>' + auditHtml + '</section>' +
+      '<div class="detail-grid">' + details + '</div>' + cancellationRequestHtml + '<section class="audit-section"><h3>Admin audit history</h3>' + auditHtml + '</section>' +
       '<div class="modal-actions"><button type="button" class="outline" id="modal-cancel">Close</button>' +
       (booking.status === 'Confirmed' ? '<button type="button" class="outline" id="details-edit">Edit booking</button><button type="button" class="primary" id="details-cancel">Cancel booking</button>' : '') + '</div>');
     $('#modal-cancel').onclick = closeModal;
     if (booking.status === 'Confirmed') { $('#details-edit').onclick = () => editBooking(booking); $('#details-cancel').onclick = () => cancelBooking(booking); }
+    if (cancellationRequest?.status === 'Pending') {
+      $('#review-approve').onclick = () => reviewCancellation(booking, 'approve');
+      $('#review-reject').onclick = () => reviewCancellation(booking, 'reject');
+    }
   } catch (error) {
     modalMarkup('<h2>Unable to load booking</h2><div class="error">' + esc(friendlyError(error)) + '</div>' + modalActions('Close', 'Try again'));
     $('#modal-cancel').onclick = closeModal; $('#modal-submit').onclick = () => bookingDetails(id);
   }
+}
+
+function reviewCancellation(booking, decision) {
+  const request = booking?.cancellationRequest;
+  if (!request || request.status !== 'Pending') return;
+  const approving = decision === 'approve';
+  modalMarkup('<form class="modal-form ' + (approving ? '' : 'danger-modal') + '" id="cancellation-review-form"><div class="eyebrow">Cancellation review</div><h2>' + (approving ? 'Approve cancellation and refund?' : 'Reject cancellation request?') + '</h2><p class="modal-intro">' + (approving ? 'This will cancel the booking, release the workspace, remove its calendar event, and restore ' + formatHours(booking.hours) + ' to the tenant allocation.' : 'The booking will remain confirmed and its allocation will not be refunded.') + '</p><div class="cancel-summary"><b>' + esc(bookingTenant(booking)) + '</b><span>' + esc(bookingRoom(booking) + ' · ' + booking.date + ' · ' + booking.startTime + '–' + booking.endTime) + '</span></div>' + fieldMarkup({ name: 'remark', label: approving ? 'Review note (optional)' : 'Reason for rejection', type: 'textarea', value: '', required: !approving, full: true, rows: 3 }) + '<label class="check-field"><input name="confirm" type="checkbox" value="yes" required><span>I understand the effect of this decision and that it will be recorded in the audit history.</span></label><div class="modal-error error" id="modal-error"></div>' + modalActions('Keep request', approving ? 'Approve & refund' : 'Reject request') + '</form>');
+  $('#modal-cancel').onclick = closeModal;
+  const formElement = $('#cancellation-review-form');
+  formElement.onsubmit = async event => {
+    event.preventDefault(); if (formElement.dataset.busy === 'true') return;
+    formElement.dataset.busy = 'true'; $('#modal-submit').disabled = true; $('#modal-submit').textContent = approving ? 'Approving...' : 'Rejecting...'; $('#modal-error').textContent = '';
+    try {
+      const values = Object.fromEntries(new FormData(formElement));
+      await api('/api/cancellation-requests/' + request.id + '/' + decision, { method: 'POST', body: JSON.stringify({ remark: values.remark || '' }) });
+      closeModal(); await load();
+    } catch (error) { $('#modal-error').textContent = friendlyError(error); formElement.dataset.busy = 'false'; $('#modal-submit').disabled = false; $('#modal-submit').textContent = approving ? 'Approve & refund' : 'Reject request'; }
+  };
 }
 
 function editBooking(booking) {

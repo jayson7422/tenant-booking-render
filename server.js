@@ -427,6 +427,33 @@ function bookingDateAfter(
     .slice(0, 10);
 }
 
+const CANCELLATION_WINDOW_HOURS = 72;
+const CANCELLATION_REASON_CATEGORIES = [
+  'Weather disturbance',
+  'Transportation disruption',
+  'Building / facility issue',
+  'Personal emergency',
+  'Other'
+];
+
+function bookingStartInstant(booking) {
+  return new Date(businessDateTimeIso(booking.date, booking.startTime));
+}
+
+function cancellationDetails(booking, now = new Date()) {
+  const start = bookingStartInstant(booking);
+  const deadline = new Date(start.getTime() - CANCELLATION_WINDOW_HOURS * 60 * 60 * 1000);
+  return {
+    timezone: BUSINESS_TIME_ZONE,
+    windowHours: CANCELLATION_WINDOW_HOURS,
+    startAt: start.toISOString(),
+    deadlineAt: deadline.toISOString(),
+    eligible: booking.status === 'Confirmed' && now.getTime() <= deadline.getTime() && now.getTime() < start.getTime(),
+    windowClosed: now.getTime() > deadline.getTime() && now.getTime() < start.getTime(),
+    started: now.getTime() >= start.getTime()
+  };
+}
+
 function overlapsGoogleBusy(
   date,
   startTime,
@@ -2204,7 +2231,12 @@ const server =
                       room =>
                         room.id ===
                         booking.roomId
-                    )
+                    ),
+                  cancellation: cancellationDetails(booking),
+                  cancellationRequest:
+                    data.cancellationRequests.find(
+                      request => request.bookingId === booking.id
+                    ) || null
                 })
               );
 
@@ -2241,7 +2273,13 @@ const server =
                     googleConfiguration(
                       data
                     )
-                  )
+                  ),
+                cancellationPolicy: {
+                  timezone: BUSINESS_TIME_ZONE,
+                  windowHours: CANCELLATION_WINDOW_HOURS,
+                  standard: 'You can cancel a booking up to 72 hours before its scheduled start time.',
+                  emergency: 'After the normal window closes, you can submit a cancellation request for admin review. Allocation is not refunded until approval.'
+                }
               }
             );
           }
@@ -2283,6 +2321,9 @@ const server =
                 booking.startTime,
                 booking.endTime
               );
+            const remainingHours = tenantRemaining(data, tenant);
+            const remainingAfterBooking = money(remainingHours - hours);
+            const quotaAvailable = Boolean(hours) && remainingHours >= hours;
 
             if (
               bookingEndBeforeStart(
@@ -2331,11 +2372,26 @@ const server =
                     data,
                     tenant
                   ),
+                  remainingAfterBooking,
+                  quotaAvailable,
                   hours,
                   suggestions: [],
                   calendarChecked: false
                 }
               );
+            }
+
+            if (!quotaAvailable) {
+              return send(res, 200, {
+                available: false,
+                reason: `This booking needs ${hours.toFixed(1)} hour(s), but only ${remainingHours.toFixed(1)} allotted hours remain.`,
+                remainingHours,
+                remainingAfterBooking,
+                quotaAvailable,
+                hours,
+                suggestions: [],
+                calendarChecked: false
+              });
             }
 
             const conflict =
@@ -2370,6 +2426,8 @@ const server =
                       data,
                       tenant
                     ),
+                  remainingAfterBooking,
+                  quotaAvailable,
 
                   hours,
 
@@ -2407,18 +2465,18 @@ const server =
               200,
               {
                 available:
-                  !google.busy,
+                  !google.busy && quotaAvailable,
 
                 reason:
                   google.busy
                     ? 'This room is busy in Google Calendar.'
-                    : undefined,
+                    : !quotaAvailable
+                      ? `This booking needs ${hours.toFixed(1)} hour(s), but only ${remainingHours.toFixed(1)} allotted hours remain.`
+                      : undefined,
 
-                remainingHours:
-                  tenantRemaining(
-                    data,
-                    tenant
-                  ),
+                remainingHours,
+                remainingAfterBooking,
+                quotaAvailable,
 
                 hours,
 
@@ -2433,6 +2491,10 @@ const server =
           const cancellationMatch =
             url.pathname.match(
               /^\/api\/tenant\/bookings\/([^/]+)\/cancel$/
+            );
+          const cancellationRequestMatch =
+            url.pathname.match(
+              /^\/api\/tenant\/bookings\/([^/]+)\/cancellation-request$/
             );
 
           if (
@@ -2472,6 +2534,18 @@ const server =
                     'Only confirmed bookings can be cancelled'
                 }
               );
+            }
+
+            const cancellation = cancellationDetails(booking);
+            if (!cancellation.eligible) {
+              return send(res, 409, {
+                error: cancellation.started
+                  ? 'This booking has already started and can no longer be cancelled.'
+                  : 'The standard cancellation window has closed. Submit a cancellation request for admin review.',
+                code: cancellation.started ? 'CANCELLATION_TOO_LATE' : 'CANCELLATION_REVIEW_REQUIRED',
+                cancellation,
+                cancellationRequest: data.cancellationRequests.find(request => request.bookingId === booking.id) || null
+              });
             }
 
             const details =
@@ -2545,9 +2619,53 @@ const server =
                     Number(
                       booking.hours
                     )
-                  )
+                  ),
+                cancellation: cancellationDetails({ ...booking, status: 'Cancelled' })
               }
             );
+          }
+
+          if (
+            cancellationRequestMatch &&
+            req.method === 'POST'
+          ) {
+            const booking = data.bookings.find(item => item.id === cancellationRequestMatch[1] && item.tenantId === tenant.id);
+            if (!booking) return send(res, 404, { error: 'Booking not found' });
+            if (booking.status !== 'Confirmed') return send(res, 409, { error: 'Only confirmed bookings can be reviewed for cancellation.' });
+
+            const cancellation = cancellationDetails(booking);
+            if (cancellation.eligible) {
+              return send(res, 409, {
+                error: 'This booking is still within the standard cancellation window.',
+                code: 'NORMAL_CANCELLATION_AVAILABLE',
+                cancellation
+              });
+            }
+            if (cancellation.started) {
+              return send(res, 409, { error: 'This booking has already started and can no longer be cancelled.', code: 'CANCELLATION_TOO_LATE' });
+            }
+
+            const details = await body(req);
+            const reasonCategory = String(details.reasonCategory || '').trim();
+            const note = String(details.note || '').trim().slice(0, 1000);
+            if (!CANCELLATION_REASON_CATEGORIES.includes(reasonCategory)) {
+              return send(res, 400, { error: 'Choose a valid cancellation reason.' });
+            }
+            const result = await repository.cancellationRequests.create({
+              id: id('cr'),
+              bookingId: booking.id,
+              tenantId: tenant.id,
+              tenantName: tenant.fullName,
+              reasonCategory,
+              note,
+              requestedAt: new Date().toISOString()
+            });
+            return send(res, result.alreadyExists ? 200 : 201, {
+              request: result.request,
+              message: result.alreadyExists
+                ? 'A cancellation request already exists for this booking.'
+                : 'Your cancellation request was submitted for admin review. Your allocation has not been refunded.'
+            });
           }
 
           if (
@@ -2757,6 +2875,9 @@ const server =
                 },
 
                 remainingHours:
+                  result.remainingHours,
+
+                remainingAfterBooking:
                   result.remainingHours,
 
                 calendarSynced:
@@ -2977,7 +3098,24 @@ const server =
                         ...adminBookingReview(
                           data,
                           booking
-                        )
+                        ),
+
+                        cancellationRequest:
+                          data.cancellationRequests.find(
+                            request => request.bookingId === booking.id
+                          ) || null,
+
+                        needsReview:
+                          adminBookingReview(data, booking).needsReview ||
+                          data.cancellationRequests.some(request => request.bookingId === booking.id && request.status === 'Pending'),
+
+                        reviewReason:
+                          [
+                            adminBookingReview(data, booking).reviewReason,
+                            data.cancellationRequests.some(request => request.bookingId === booking.id && request.status === 'Pending')
+                              ? 'A tenant cancellation request is awaiting admin review.'
+                              : ''
+                          ].filter(Boolean).join(' ')
                       })
                     )
                     .sort(
@@ -2998,6 +3136,21 @@ const server =
                             }`
                           )
                     ),
+
+                cancellationRequests:
+                  data.cancellationRequests
+                    .filter(request => request.status === 'Pending')
+                    .map(request => {
+                      const booking = data.bookings.find(item => item.id === request.bookingId);
+                      return {
+                        ...request,
+                        booking: booking || null,
+                        tenant: data.tenants.find(item => item.id === request.tenantId)
+                          ? cleanTenant(data.tenants.find(item => item.id === request.tenantId))
+                          : null,
+                        room: booking ? data.rooms.find(item => item.id === booking.roomId) || null : null
+                      };
+                    }),
 
                 calendarConnected:
                   Boolean(
@@ -3435,6 +3588,40 @@ const server =
             );
           }
 
+          const cancellationReviewMatch =
+            url.pathname.match(
+              /^\/api\/cancellation-requests\/([^/]+)\/(approve|reject)$/
+            );
+
+          if (cancellationReviewMatch && req.method === 'POST') {
+            if (!allow(user, ['admin'])) {
+              return send(res, 403, { error: 'Only admins can review cancellation requests' });
+            }
+            const request = data.cancellationRequests.find(item => item.id === cancellationReviewMatch[1]);
+            if (!request) return send(res, 404, { error: 'Cancellation request not found' });
+            const booking = data.bookings.find(item => item.id === request.bookingId);
+            if (!booking) return send(res, 404, { error: 'Booking not found' });
+            const input = await body(req);
+            const reviewRemark = String(input.remark || '').trim().slice(0, 1000);
+            if (cancellationReviewMatch[2] === 'reject' && !reviewRemark) {
+              return send(res, 400, { error: 'A reason is required when rejecting a cancellation request' });
+            }
+            const result = await repository.cancellationRequests.review(
+              request.id,
+              cancellationReviewMatch[2],
+              { id: user.id, username: user.username },
+              reviewRemark,
+              new Date().toISOString()
+            );
+            if (cancellationReviewMatch[2] === 'approve' && !result.alreadyProcessed && result.calendarEventIdToDelete) {
+              const room = data.rooms.find(item => item.id === booking.roomId);
+              await deleteCalendarEvent(data, room, result.calendarEventIdToDelete).catch(error => {
+                console.error(`Approved cancellation calendar cleanup failed: ${error.message}`);
+              });
+            }
+            return send(res, 200, result);
+          }
+
           const bookingMatch =
             url.pathname.match(
               /^\/api\/bookings\/([^/]+)$/
@@ -3515,7 +3702,21 @@ const server =
                   ...adminBookingReview(
                     data,
                     booking
-                  )
+                  ),
+                  cancellationRequest:
+                    data.cancellationRequests.find(
+                      request => request.bookingId === booking.id
+                    ) || null,
+                  needsReview:
+                    adminBookingReview(data, booking).needsReview ||
+                    data.cancellationRequests.some(request => request.bookingId === booking.id && request.status === 'Pending'),
+                  reviewReason:
+                    [
+                      adminBookingReview(data, booking).reviewReason,
+                      data.cancellationRequests.some(request => request.bookingId === booking.id && request.status === 'Pending')
+                        ? 'A tenant cancellation request is awaiting admin review.'
+                        : ''
+                    ].filter(Boolean).join(' ')
                 },
                 audit:
                   await repository.audit.listForBooking(
